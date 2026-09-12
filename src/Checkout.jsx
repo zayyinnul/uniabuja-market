@@ -68,7 +68,6 @@ function Checkout({ user, onBack, onOrderCreated }) {
   const handlePlaceOrder = async (e) => {
     e.preventDefault()
 
-    // Prevent accidental double submission
     if (submittingRef.current) {
       return
     }
@@ -98,41 +97,128 @@ function Checkout({ user, onBack, onOrderCreated }) {
     setMessage('')
 
     try {
-      const { data: orderId, error } = await supabase.rpc(
-        'create_market_order',
-        {
+      // Create the order securely in Supabase
+      const { data: orderId, error: orderError } =
+        await supabase.rpc('create_market_order', {
           p_delivery_address: deliveryAddress.trim(),
           p_phone: phone.trim(),
-        }
-      )
+        })
 
-      if (error) {
+      if (orderError) {
         console.error(
           'Create market order error:',
-          error
+          orderError
         )
 
         throw new Error(
-          error.message || 'Could not place your order.'
+          orderError.message ||
+          'Could not place your order.'
         )
       }
 
       console.log('Order created:', orderId)
 
-      onOrderCreated(orderId)
+      // Get the current Supabase login session
+      const {
+        data: sessionData,
+        error: sessionError,
+      } = await supabase.auth.getSession()
+
+      if (sessionError) {
+        throw new Error(
+          sessionError.message ||
+          'Could not get your login session.'
+        )
+      }
+
+      const accessToken =
+        sessionData?.session?.access_token
+
+      if (!accessToken) {
+        throw new Error(
+          'Your login session has expired. Please log in again.'
+        )
+      }
+
+      // Local development uses the local Worker.
+      // Production uses the Cloudflare Worker on the same domain.
+      const paymentApiUrl =
+        window.location.hostname === 'localhost'
+          ? 'http://127.0.0.1:8787/api/payments/initialize'
+          : '/api/payments/initialize'
+
+      console.log(
+        'Initializing payment through:',
+        paymentApiUrl
+      )
+
+      const response = await fetch(paymentApiUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({
+          order_id: orderId,
+        }),
+      })
+
+      // Read the response safely so an empty Worker response
+      // doesn't produce "Unexpected end of JSON input".
+      const responseText = await response.text()
+
+      let paymentData = null
+
+      try {
+        paymentData = responseText
+          ? JSON.parse(responseText)
+          : null
+      } catch (parseError) {
+        console.error(
+          'Payment response was not valid JSON:',
+          responseText
+        )
+
+        throw new Error(
+          'The payment server returned an invalid response.'
+        )
+      }
+
+      if (!response.ok || !paymentData?.success) {
+        throw new Error(
+          paymentData?.message ||
+          'Could not initialize payment.'
+        )
+      }
+
+      if (!paymentData.authorization_url) {
+        throw new Error(
+          'Paystack did not return a payment link.'
+        )
+      }
+
+      console.log(
+        'Payment initialized:',
+        paymentData.reference
+      )
+
+      // Send the customer to Paystack
+      window.location.href =
+        paymentData.authorization_url
 
     } catch (error) {
-      console.error('Place order error:', error)
+      console.error(
+        'Place order/payment error:',
+        error
+      )
 
-      // Allow another attempt if the order failed
       submittingRef.current = false
+      setPlacingOrder(false)
 
       setMessage(
         error.message ||
-        'Something went wrong while placing your order.'
+        'Something went wrong while starting payment.'
       )
-
-      setPlacingOrder(false)
     }
   }
 
@@ -178,7 +264,7 @@ function Checkout({ user, onBack, onOrderCreated }) {
           </h1>
 
           <p>
-            Enter your delivery details to place your order.
+            Enter your delivery details to continue to payment.
           </p>
         </div>
 
@@ -331,8 +417,8 @@ function Checkout({ user, onBack, onOrderCreated }) {
                   disabled={placingOrder}
                 >
                   {placingOrder
-                    ? 'Placing order...'
-                    : 'Place Order'}
+                    ? 'Preparing payment...'
+                    : 'Proceed to Payment'}
                 </button>
 
               </form>
