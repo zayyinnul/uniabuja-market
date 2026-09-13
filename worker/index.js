@@ -24,7 +24,6 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url)
 
-    // CORS preflight
     if (request.method === 'OPTIONS') {
       return new Response(null, {
         status: 204,
@@ -36,7 +35,6 @@ export default {
       })
     }
 
-    // HEALTH CHECK
     if (url.pathname === '/api/health') {
       return jsonResponse({
         success: true,
@@ -44,9 +42,6 @@ export default {
       })
     }
 
-    // =========================================================
-    // INITIALIZE PAYSTACK PAYMENT
-    // =========================================================
     if (
       url.pathname === '/api/payments/initialize' &&
       request.method === 'POST'
@@ -56,33 +51,24 @@ export default {
 
         if (!authHeader?.startsWith('Bearer ')) {
           return jsonResponse(
-            {
-              success: false,
-              message: 'You must be logged in',
-            },
+            { success: false, message: 'You must be logged in' },
             401
           )
         }
 
         const accessToken = authHeader.replace('Bearer ', '').trim()
-
         const body = await request.json()
         const { order_id } = body
 
         if (!order_id) {
           return jsonResponse(
-            {
-              success: false,
-              message: 'Order ID is required',
-            },
+            { success: false, message: 'Order ID is required' },
             400
           )
         }
 
-        // Create our temporary reference.
         const internalReference = `UM-${order_id}-${crypto.randomUUID()}`
 
-        // Prepare order for payment
         const prepareResponse = await fetch(
           `${env.SUPABASE_URL}/rest/v1/rpc/prepare_order_payment`,
           {
@@ -140,7 +126,6 @@ export default {
           )
         }
 
-        // Initialize transaction with Paystack
         const paystackResponse = await fetch(
           'https://api.paystack.co/transaction/initialize',
           {
@@ -178,13 +163,8 @@ export default {
           )
         }
 
-        // IMPORTANT:
-        // Use the exact reference Paystack returned.
         const paystackReference = paystackData.data.reference
 
-        // Store Paystack's actual reference against the order.
-        // This means the callback can always find the order,
-        // even if Paystack returns a different reference.
         const updateOrderResponse = await fetch(
           `${env.SUPABASE_URL}/rest/v1/orders?id=eq.${encodeURIComponent(
             order_id
@@ -194,7 +174,6 @@ export default {
             headers: {
               'Content-Type': 'application/json',
               apikey: env.SUPABASE_SECRET_KEY,
-              Authorization: `Bearer ${env.SUPABASE_SECRET_KEY}`,
               Prefer: 'return=minimal',
             },
             body: JSON.stringify({
@@ -230,8 +209,7 @@ export default {
 
         return jsonResponse({
           success: true,
-          authorization_url:
-            paystackData.data.authorization_url,
+          authorization_url: paystackData.data.authorization_url,
           reference: paystackReference,
         })
       } catch (error) {
@@ -252,16 +230,12 @@ export default {
       }
     }
 
-    // =========================================================
-    // PAYSTACK CALLBACK
-    // =========================================================
     if (
       url.pathname === '/payment/callback' &&
       request.method === 'GET'
     ) {
       try {
-        const reference =
-          url.searchParams.get('reference')
+        const reference = url.searchParams.get('reference')
 
         if (!reference) {
           return htmlResponse(
@@ -282,9 +256,6 @@ export default {
           reference
         )
 
-        // -----------------------------------------------------
-        // 1. VERIFY DIRECTLY WITH PAYSTACK
-        // -----------------------------------------------------
         const verifyResponse = await fetch(
           `https://api.paystack.co/transaction/verify/${encodeURIComponent(
             reference
@@ -325,9 +296,6 @@ export default {
 
         const transaction = verifyData.data
 
-        // -----------------------------------------------------
-        // 2. FIND ORDER BY PAYMENT REFERENCE
-        // -----------------------------------------------------
         const orderResponse = await fetch(
           `${env.SUPABASE_URL}/rest/v1/orders?payment_reference=eq.${encodeURIComponent(
             reference
@@ -336,7 +304,6 @@ export default {
             method: 'GET',
             headers: {
               apikey: env.SUPABASE_SECRET_KEY,
-              Authorization: `Bearer ${env.SUPABASE_SECRET_KEY}`,
             },
           }
         )
@@ -354,9 +321,7 @@ export default {
             <html>
               <body>
                 <h2>Order not found</h2>
-                <p>
-                  We could not match this payment to an order.
-                </p>
+                <p>We could not match this payment to an order.</p>
                 <p>Reference: ${reference}</p>
               </body>
             </html>
@@ -367,11 +332,7 @@ export default {
 
         const order = orders[0]
 
-        // -----------------------------------------------------
-        // 3. CHECK PAYMENT AMOUNT
-        // -----------------------------------------------------
         const paidAmount = Number(transaction.amount)
-
         const expectedAmount = Math.round(
           Number(order.total_amount) * 100
         )
@@ -390,9 +351,7 @@ export default {
             <html>
               <body>
                 <h2>Payment amount mismatch</h2>
-                <p>
-                  The amount paid does not match the order.
-                </p>
+                <p>The amount paid does not match the order.</p>
               </body>
             </html>
             `,
@@ -400,9 +359,6 @@ export default {
           )
         }
 
-        // -----------------------------------------------------
-        // 4. CHECK REFERENCE
-        // -----------------------------------------------------
         if (order.payment_reference !== reference) {
           return htmlResponse(
             `
@@ -420,9 +376,6 @@ export default {
           )
         }
 
-        // -----------------------------------------------------
-        // 5. MARK ORDER AS PAID
-        // -----------------------------------------------------
         const paidResponse = await fetch(
           `${env.SUPABASE_URL}/rest/v1/rpc/mark_order_payment_paid`,
           {
@@ -430,7 +383,6 @@ export default {
             headers: {
               'Content-Type': 'application/json',
               apikey: env.SUPABASE_SECRET_KEY,
-              Authorization: `Bearer ${env.SUPABASE_SECRET_KEY}`,
             },
             body: JSON.stringify({
               p_order_id: order.id,
@@ -463,9 +415,6 @@ export default {
           )
         }
 
-        // -----------------------------------------------------
-        // 6. SUCCESS
-        // -----------------------------------------------------
         return htmlResponse(
           `
           <html>
