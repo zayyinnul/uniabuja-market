@@ -402,6 +402,9 @@ export default {
           return htmlResponse(
             `
             <html>
+              <head>
+                <title>Payment Received</title>
+              </head>
               <body>
                 <h2>Payment received</h2>
                 <p>
@@ -459,12 +462,6 @@ export default {
       }
     }
 
-    return jsonResponse(
-      {
-        success: false,
-        message: 'Not found',
-      },
-      404
-    )
+    return env.ASSETS.fetch(request)
   },
 }
