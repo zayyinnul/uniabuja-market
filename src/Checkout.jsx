@@ -142,10 +142,13 @@ function Checkout({ user, onBack, onOrderCreated }) {
 
       // Local development uses the local Worker.
       // Production uses the Cloudflare Worker on the same domain.
-      const paymentApiUrl =
-        window.location.hostname === 'localhost'
-          ? 'http://127.0.0.1:8787/api/payments/initialize'
-          : '/api/payments/initialize'
+      const isLocal =
+        window.location.hostname === 'localhost' ||
+        window.location.hostname === '127.0.0.1'
+
+      const paymentApiUrl = isLocal
+        ? 'http://127.0.0.1:8787/api/payments/initialize'
+        : '/api/payments/initialize'
 
       console.log(
         'Initializing payment through:',
@@ -163,8 +166,7 @@ function Checkout({ user, onBack, onOrderCreated }) {
         }),
       })
 
-      // Read the response safely so an empty Worker response
-      // doesn't produce "Unexpected end of JSON input".
+      // Read the response safely
       const responseText = await response.text()
 
       let paymentData = null

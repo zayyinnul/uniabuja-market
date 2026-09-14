@@ -68,6 +68,7 @@ function VendorOrders({ user, onBack }) {
               vendorOrder?.status ||
               item.order_status ||
               'pending',
+            payment_status: item.payment_status || 'unpaid',
             delivery_address: item.delivery_address,
             phone: item.phone,
             order_created_at: item.order_created_at,
@@ -356,6 +357,19 @@ function VendorOrders({ user, onBack }) {
                   </div>
 
                   <div className="order-delivery">
+                    <div>
+                      <strong>Payment</strong>
+
+                      <p>
+                        {order.payment_status ===
+                        'paid'
+                          ? '💳 Paid'
+                          : `💳 ${formatStatus(
+                              order.payment_status
+                            )}`}
+                      </p>
+                    </div>
+
                     <div>
                       <strong>Customer</strong>
 
