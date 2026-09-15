@@ -23,6 +23,7 @@ function MyOrders({ user, onBack }) {
             customer_id,
             total_amount,
             status,
+            payment_status,
             delivery_address,
             phone,
             created_at,
@@ -122,12 +123,10 @@ function MyOrders({ user, onBack }) {
 
       const completeOrders = orderData.map((order) => ({
         ...order,
-
         status:
           statusMap[order.id] ||
           order.status ||
           'pending',
-
         items: itemsMap[order.id] || [],
       }))
 
@@ -158,6 +157,45 @@ function MyOrders({ user, onBack }) {
       .replace(/\b\w/g, (letter) =>
         letter.toUpperCase()
       )
+  }
+
+  const deliverySteps = [
+    {
+      key: 'pending',
+      label: 'Order placed',
+      icon: '📝',
+    },
+    {
+      key: 'accepted',
+      label: 'Accepted',
+      icon: '✅',
+    },
+    {
+      key: 'processing',
+      label: 'Processing',
+      icon: '⚙️',
+    },
+    {
+      key: 'ready',
+      label: 'Ready',
+      icon: '📦',
+    },
+    {
+      key: 'out_for_delivery',
+      label: 'Out for delivery',
+      icon: '🚚',
+    },
+    {
+      key: 'delivered',
+      label: 'Delivered',
+      icon: '🎉',
+    },
+  ]
+
+  const getStatusIndex = (status) => {
+    return deliverySteps.findIndex(
+      (step) => step.key === status
+    )
   }
 
   if (loading) {
@@ -202,7 +240,9 @@ function MyOrders({ user, onBack }) {
 
         {orders.length === 0 ? (
           <div className="market-message">
-            <div className="empty-cart-icon">📦</div>
+            <div className="empty-cart-icon">
+              📦
+            </div>
 
             <h3>No orders yet</h3>
 
@@ -220,117 +260,247 @@ function MyOrders({ user, onBack }) {
           </div>
         ) : (
           <div className="orders-list">
-            {orders.map((order) => (
-              <div
-                className="order-card"
-                key={order.id}
-              >
-                <div className="order-card-header">
-                  <div>
-                    <span className="order-label">
-                      ORDER
+            {orders.map((order) => {
+              const currentStatusIndex =
+                getStatusIndex(order.status)
+
+              return (
+                <div
+                  className="order-card"
+                  key={order.id}
+                >
+                  <div className="order-card-header">
+                    <div>
+                      <span className="order-label">
+                        ORDER
+                      </span>
+
+                      <h2>
+                        #{order.id.slice(0, 8)}
+                      </h2>
+
+                      <p>
+                        {formatDate(order.created_at)}
+                      </p>
+                    </div>
+
+                    <span
+                      className={`order-status status-${order.status}`}
+                    >
+                      {formatStatus(order.status)}
                     </span>
+                  </div>
 
-                    <h2>
-                      #{order.id.slice(0, 8)}
-                    </h2>
+                  {/* Payment status */}
+                  <div
+                    style={{
+                      background:
+                        order.payment_status === 'paid'
+                          ? '#ecfdf5'
+                          : '#fff7ed',
+                      border:
+                        order.payment_status === 'paid'
+                          ? '1px solid #10b981'
+                          : '1px solid #fb923c',
+                      borderRadius: '10px',
+                      padding: '12px 14px',
+                      margin: '12px 0',
+                      color:
+                        order.payment_status === 'paid'
+                          ? '#065f46'
+                          : '#9a3412',
+                    }}
+                  >
+                    <strong>
+                      {order.payment_status === 'paid'
+                        ? '💳 PAYMENT CONFIRMED'
+                        : `💳 ${formatStatus(
+                            order.payment_status
+                          )}`}
+                    </strong>
 
-                    <p>
-                      {formatDate(order.created_at)}
+                    <p
+                      style={{
+                        margin: '5px 0 0',
+                      }}
+                    >
+                      {order.payment_status === 'paid'
+                        ? 'Your payment has been successfully confirmed.'
+                        : 'Your payment is being processed.'}
                     </p>
                   </div>
 
-                  <span
-                    className={`order-status status-${order.status}`}
+                  {/* Delivery progress */}
+                  <div
+                    style={{
+                      margin: '18px 0',
+                      padding: '16px',
+                      background: '#f8fafc',
+                      border: '1px solid #e2e8f0',
+                      borderRadius: '12px',
+                    }}
                   >
-                    {formatStatus(order.status)}
-                  </span>
-                </div>
+                    <strong>
+                      🚚 Delivery progress
+                    </strong>
 
-                <div className="order-items">
-                  {order.items.map((item) => (
                     <div
-                      className="order-item"
-                      key={item.id}
+                      style={{
+                        marginTop: '16px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '12px',
+                      }}
                     >
-                      <div className="order-item-image">
-                        {item.product?.image_url ? (
-                          <img
-                            src={item.product.image_url}
-                            alt={item.product.name}
-                          />
-                        ) : (
-                          <span>🛍️</span>
-                        )}
+                      {deliverySteps.map(
+                        (step, index) => {
+                          const completed =
+                            currentStatusIndex >=
+                            index
+
+                          const current =
+                            currentStatusIndex ===
+                            index
+
+                          return (
+                            <div
+                              key={step.key}
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '12px',
+                                fontWeight: current
+                                  ? '700'
+                                  : '400',
+                                color: completed
+                                  ? '#065f46'
+                                  : '#64748b',
+                              }}
+                            >
+                              <div
+                                style={{
+                                  width: '34px',
+                                  height: '34px',
+                                  minWidth: '34px',
+                                  borderRadius: '50%',
+                                  display: 'flex',
+                                  alignItems:
+                                    'center',
+                                  justifyContent:
+                                    'center',
+                                  background:
+                                    completed
+                                      ? '#d1fae5'
+                                      : '#e2e8f0',
+                                  border:
+                                    current
+                                      ? '2px solid #10b981'
+                                      : '1px solid #cbd5e1',
+                                }}
+                              >
+                                {completed
+                                  ? step.icon
+                                  : '○'}
+                              </div>
+
+                              <span>
+                                {step.label}
+                                {current
+                                  ? ' — Current'
+                                  : ''}
+                              </span>
+                            </div>
+                          )
+                        }
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="order-items">
+                    {order.items.map((item) => (
+                      <div
+                        className="order-item"
+                        key={item.id}
+                      >
+                        <div className="order-item-image">
+                          {item.product?.image_url ? (
+                            <img
+                              src={item.product.image_url}
+                              alt={item.product.name}
+                            />
+                          ) : (
+                            <span>🛍️</span>
+                          )}
+                        </div>
+
+                        <div className="order-item-info">
+                          <h3>
+                            {item.product?.name ||
+                              'Product unavailable'}
+                          </h3>
+
+                          {item.product?.category && (
+                            <span>
+                              {item.product.category}
+                            </span>
+                          )}
+
+                          <p>
+                            Quantity: {item.quantity}
+                          </p>
+                        </div>
+
+                        <strong>
+                          ₦
+                          {(
+                            Number(item.unit_price) *
+                            item.quantity
+                          ).toLocaleString()}
+                        </strong>
                       </div>
+                    ))}
+                  </div>
 
-                      <div className="order-item-info">
-                        <h3>
-                          {item.product?.name ||
-                            'Product unavailable'}
-                        </h3>
+                  <div className="order-delivery">
+                    <div>
+                      <strong>
+                        Delivery location
+                      </strong>
 
-                        {item.product?.category && (
-                          <span>
-                            {item.product.category}
-                          </span>
-                        )}
+                      <p>
+                        {order.delivery_address}
+                      </p>
+                    </div>
 
-                        <p>
-                          Quantity: {item.quantity}
-                        </p>
-                      </div>
+                    <div>
+                      <strong>Phone</strong>
+
+                      <p>{order.phone}</p>
+                    </div>
+                  </div>
+
+                  <div className="order-card-footer">
+                    <span>
+                      {order.items.length}{' '}
+                      {order.items.length === 1
+                        ? 'item'
+                        : 'items'}
+                    </span>
+
+                    <div>
+                      <span>Total</span>
 
                       <strong>
                         ₦
-                        {(
-                          Number(item.unit_price) *
-                          item.quantity
+                        {Number(
+                          order.total_amount
                         ).toLocaleString()}
                       </strong>
                     </div>
-                  ))}
-                </div>
-
-                <div className="order-delivery">
-                  <div>
-                    <strong>
-                      Delivery location
-                    </strong>
-
-                    <p>
-                      {order.delivery_address}
-                    </p>
-                  </div>
-
-                  <div>
-                    <strong>Phone</strong>
-
-                    <p>{order.phone}</p>
                   </div>
                 </div>
-
-                <div className="order-card-footer">
-                  <span>
-                    {order.items.length}{' '}
-                    {order.items.length === 1
-                      ? 'item'
-                      : 'items'}
-                  </span>
-
-                  <div>
-                    <span>Total</span>
-
-                    <strong>
-                      ₦
-                      {Number(
-                        order.total_amount
-                      ).toLocaleString()}
-                    </strong>
-                  </div>
-                </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
         )}
       </main>
