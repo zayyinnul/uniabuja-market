@@ -68,7 +68,8 @@ function VendorOrders({ user, onBack }) {
               vendorOrder?.status ||
               item.order_status ||
               'pending',
-            payment_status: item.payment_status || 'unpaid',
+            payment_status:
+              item.payment_status || 'unpaid',
             delivery_address: item.delivery_address,
             phone: item.phone,
             order_created_at: item.order_created_at,
@@ -317,6 +318,33 @@ function VendorOrders({ user, onBack }) {
                       )}
                     </span>
                   </div>
+
+                  {order.payment_status === 'paid' && (
+                    <div
+                      style={{
+                        background: '#ecfdf5',
+                        border: '1px solid #10b981',
+                        borderRadius: '10px',
+                        padding: '12px 14px',
+                        margin: '12px 0',
+                        color: '#065f46',
+                      }}
+                    >
+                      <strong>
+                        🟢 PAYMENT RECEIVED
+                      </strong>
+
+                      <p
+                        style={{
+                          margin: '5px 0 0',
+                        }}
+                      >
+                        Customer payment has been
+                        confirmed. You can process
+                        this order.
+                      </p>
+                    </div>
+                  )}
 
                   <div className="order-items">
                     {order.items.map((item) => (
