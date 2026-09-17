@@ -11,5 +11,13 @@
       "/api/*",
       "/payment/callback"
     ]
+  },
+  "vars": {
+    "AUTOMATED_PAYOUTS_ENABLED": "false"
+  },
+  "triggers": {
+    "crons": [
+      "*/5 * * * *"
+    ]
   }
 }

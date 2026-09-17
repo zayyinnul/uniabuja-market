@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import './App.css'
+
 import Auth from './Auth'
 import Store from './Store'
 import Product from './Product'
@@ -8,6 +9,8 @@ import Cart from './Cart'
 import Checkout from './Checkout'
 import MyOrders from './MyOrders'
 import VendorOrders from './VendorOrders'
+import PayoutAccount from './PayoutAccount'
+
 import { supabase } from './lib/supabase'
 
 function App() {
@@ -19,49 +22,54 @@ function App() {
   const [showCheckout, setShowCheckout] = useState(false)
   const [showOrders, setShowOrders] = useState(false)
   const [showVendorOrders, setShowVendorOrders] = useState(false)
+  const [showPayoutAccount, setShowPayoutAccount] = useState(false)
 
   const [user, setUser] = useState(null)
   const [store, setStore] = useState(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    checkUser()
+    let mounted = true
+
+    const loadSession = async () => {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession()
+
+      if (!mounted) return
+
+      setUser(session?.user ?? null)
+
+      if (session?.user) {
+        await loadStore(session.user.id)
+      }
+
+      setLoading(false)
+    }
+
+    loadSession()
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange(
-      (_event, session) => {
-        const currentUser = session?.user ?? null
+    } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      if (!mounted) return
 
-        setUser(currentUser)
+      setUser(session?.user ?? null)
 
-        if (!currentUser) {
-          setStore(null)
-          return
-        }
-
-        loadStore(currentUser.id)
+      if (session?.user) {
+        await loadStore(session.user.id)
+      } else {
+        setStore(null)
       }
-    )
 
-    return () => subscription.unsubscribe()
-  }, [])
+      setLoading(false)
+    })
 
-  const checkUser = async () => {
-    const { data } =
-      await supabase.auth.getSession()
-
-    const currentUser =
-      data.session?.user ?? null
-
-    setUser(currentUser)
-
-    if (currentUser) {
-      await loadStore(currentUser.id)
+    return () => {
+      mounted = false
+      subscription.unsubscribe()
     }
-
-    setLoading(false)
-  }
+  }, [])
 
   const loadStore = async (userId) => {
     const { data, error } = await supabase
@@ -76,7 +84,7 @@ function App() {
       return
     }
 
-    setStore(data || null)
+    setStore(data)
   }
 
   const handleLogout = async () => {
@@ -84,6 +92,7 @@ function App() {
 
     setUser(null)
     setStore(null)
+
     setShowAuth(false)
     setShowStore(false)
     setShowProduct(false)
@@ -92,11 +101,10 @@ function App() {
     setShowCheckout(false)
     setShowOrders(false)
     setShowVendorOrders(false)
+    setShowPayoutAccount(false)
   }
 
-  const handleStoreCreated = async (newStore) => {
-    setStore(newStore)
-
+  const handleStoreCreated = async () => {
     if (user) {
       await loadStore(user.id)
     }
@@ -111,27 +119,37 @@ function App() {
   const handleOrderCreated = () => {
     setShowCheckout(false)
     setShowCart(false)
-
-    alert(
-      'Order placed successfully! Your order has been created.'
-    )
+    setShowOrders(true)
   }
 
   if (loading) {
     return (
-      <div className="loading-page">
-        <h2>
-          UniAbuja Market
-        </h2>
-
-        <p>
-          Loading...
-        </p>
+      <div className="app-loading">
+        <h2>UniAbuja Market</h2>
+        <p>Loading...</p>
       </div>
     )
   }
 
-  if (user && showVendorOrders) {
+  if (showAuth) {
+    return (
+      <Auth
+        onBack={() => setShowAuth(false)}
+        onLogin={() => setShowAuth(false)}
+      />
+    )
+  }
+
+  if (showPayoutAccount) {
+    return (
+      <PayoutAccount
+        user={user}
+        onBack={() => setShowPayoutAccount(false)}
+      />
+    )
+  }
+
+  if (showVendorOrders) {
     return (
       <VendorOrders
         user={user}
@@ -140,7 +158,7 @@ function App() {
     )
   }
 
-  if (user && showOrders) {
+  if (showOrders) {
     return (
       <MyOrders
         user={user}
@@ -149,7 +167,7 @@ function App() {
     )
   }
 
-  if (user && showCheckout) {
+  if (showCheckout) {
     return (
       <Checkout
         user={user}
@@ -159,39 +177,38 @@ function App() {
     )
   }
 
-  if (user && showCart) {
+  if (showCart) {
     return (
       <Cart
         user={user}
         onBack={() => setShowCart(false)}
-        onCheckout={() => {
-          setShowCart(false)
-          setShowCheckout(true)
-        }}
+        onCheckout={() => setShowCheckout(true)}
       />
     )
   }
 
-  if (user && showMarket) {
+  if (showMarket) {
     return (
       <Market
         user={user}
         onBack={() => setShowMarket(false)}
+        onCart={() => setShowCart(true)}
       />
     )
   }
 
-  if (user && showProduct) {
+  if (showProduct) {
     return (
       <Product
         user={user}
+        store={store}
         onBack={() => setShowProduct(false)}
         onProductCreated={handleProductCreated}
       />
     )
   }
 
-  if (user && showStore) {
+  if (showStore) {
     return (
       <Store
         user={user}
@@ -201,70 +218,85 @@ function App() {
     )
   }
 
-  if (user) {
-    return (
-      <div className="dashboard-page">
-        <nav className="navbar">
-          <div className="logo">
-            UniAbuja Market
-          </div>
+  return (
+    <div className="dashboard-page">
+      <nav className="navbar">
+        <div className="logo">
+          UniAbuja Market
+        </div>
 
-          <button
-            type="button"
-            className="back-button"
-            onClick={handleLogout}
-          >
-            Log out
-          </button>
-        </nav>
+        <div>
+          {user ? (
+            <button
+              type="button"
+              className="back-button"
+              onClick={handleLogout}
+            >
+              Logout
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="back-button"
+              onClick={() => setShowAuth(true)}
+            >
+              Login
+            </button>
+          )}
+        </div>
+      </nav>
 
-        <main className="dashboard-container">
-          <div className="dashboard-header">
-            <p className="welcome-small">
-              UNIABUJA MARKET
-            </p>
+      <main className="dashboard-container">
+        <div className="dashboard-header">
+          <p className="welcome-small">
+            THE STUDENT MARKETPLACE
+          </p>
 
-            <h1>
-              Welcome back!
-            </h1>
+          <h1>
+            Everything you need, right on campus
+          </h1>
 
+          {user ? (
             <p>
-              Buy, sell and connect with students on campus.
+              Welcome back,{' '}
+              {user.user_metadata?.full_name ||
+                user.email}
+              .
             </p>
+          ) : (
+            <p>
+              Shop, sell and discover products from
+              UniAbuja students.
+            </p>
+          )}
+        </div>
+
+        <div className="dashboard-grid">
+          {/* MARKETPLACE */}
+          <div className="dashboard-card">
+            <span>🛍️</span>
+            <h3>Marketplace</h3>
+            <p>
+              Browse products and services available
+              around campus.
+            </p>
+
+            <button
+              type="button"
+              onClick={() => setShowMarket(true)}
+            >
+              Open Marketplace
+            </button>
           </div>
 
-          <div className="dashboard-grid">
-
-            {/* MARKET */}
-            <div className="dashboard-card">
-              <span>🛍️</span>
-
-              <h3>
-                Marketplace
-              </h3>
-
-              <p>
-                Browse products from student vendors.
-              </p>
-
-              <button
-                type="button"
-                onClick={() => setShowMarket(true)}
-              >
-                Explore Market
-              </button>
-            </div>
-
-            {/* CART */}
+          {/* CART */}
+          {user && (
             <div className="dashboard-card">
               <span>🛒</span>
-
-              <h3>
-                My Cart
-              </h3>
-
+              <h3>My Cart</h3>
               <p>
-                View products you've added to your cart.
+                View your selected products and proceed
+                to checkout.
               </p>
 
               <button
@@ -274,15 +306,14 @@ function App() {
                 View Cart
               </button>
             </div>
+          )}
 
-            {/* STORE / VENDOR */}
+          {/* STORE / VENDOR */}
+          {user && (
             <div className="dashboard-card">
               <span>🏪</span>
-
               <h3>
-                {store
-                  ? 'My Store'
-                  : 'Become a Vendor'}
+                {store ? 'My Store' : 'Become a Vendor'}
               </h3>
 
               <p>
@@ -300,79 +331,89 @@ function App() {
                   : 'Create Store'}
               </button>
             </div>
+          )}
 
-            {/* ADD PRODUCT */}
-            {store && (
-              <div className="dashboard-card">
-                <span>➕</span>
+          {/* ADD PRODUCT */}
+          {user && store && (
+            <div className="dashboard-card">
+              <span>➕</span>
+              <h3>Add Product</h3>
+              <p>
+                Add products to your store for students
+                to discover.
+              </p>
 
-                <h3>
-                  Add Product
-                </h3>
+              <button
+                type="button"
+                onClick={() => setShowProduct(true)}
+              >
+                Add Product
+              </button>
+            </div>
+          )}
 
-                <p>
-                  Add products to your store.
-                </p>
-
-                <button
-                  type="button"
-                  onClick={() => setShowProduct(true)}
-                >
-                  Add Product
-                </button>
-              </div>
-            )}
-
-            {/* MY ORDERS */}
+          {/* MY ORDERS */}
+          {user && (
             <div className="dashboard-card">
               <span>📦</span>
-
-              <h3>
-                My Orders
-              </h3>
-
+              <h3>My Orders</h3>
               <p>
-                Track your purchases and deliveries.
+                Track your purchases and delivery status.
               </p>
 
               <button
                 type="button"
                 onClick={() => setShowOrders(true)}
               >
-                View Orders
+                View My Orders
               </button>
             </div>
+          )}
 
-            {/* VENDOR ORDERS */}
-            {store && (
-              <div className="dashboard-card">
-                <span>📋</span>
+          {/* VENDOR ORDERS */}
+          {user && store && (
+            <div className="dashboard-card">
+              <span>📋</span>
+              <h3>Vendor Orders</h3>
+              <p>
+                View orders containing your products.
+              </p>
 
-                <h3>
-                  Vendor Orders
-                </h3>
+              <button
+                type="button"
+                onClick={() => setShowVendorOrders(true)}
+              >
+                View Vendor Orders
+              </button>
+            </div>
+          )}
 
-                <p>
-                  View orders containing your products.
-                </p>
+          {/* VENDOR PAYOUT */}
+          {user && store && (
+            <div className="dashboard-card">
+              <span>💰</span>
+              <h3>Vendor Payout</h3>
+              <p>
+                Set the bank account for receiving your
+                vendor payouts.
+              </p>
 
-                <button
-                  type="button"
-                  onClick={() => setShowVendorOrders(true)}
-                >
-                  View Vendor Orders
-                </button>
-              </div>
-            )}
+              <button
+                type="button"
+                onClick={() =>
+                  setShowPayoutAccount(true)
+                }
+              >
+                Manage Payout Account
+              </button>
+            </div>
+          )}
 
-            {/* PROFILE */}
+          {/* PROFILE */}
+          {user && (
             <div className="dashboard-card">
               <span>👤</span>
-
-              <h3>
-                Profile
-              </h3>
-
+              <h3>Profile</h3>
               <p>
                 Manage your account information.
               </p>
@@ -384,59 +425,25 @@ function App() {
                 Coming Soon
               </button>
             </div>
-
-          </div>
-        </main>
-      </div>
-    )
-  }
-
-  return (
-    <div className="home-page">
-      <nav className="navbar">
-        <div className="logo">
-          UniAbuja Market
+          )}
         </div>
 
-        <button
-          type="button"
-          className="back-button"
-          onClick={() => setShowAuth(true)}
-        >
-          Log in
-        </button>
-      </nav>
-
-      {showAuth ? (
-        <Auth
-          onBack={() => setShowAuth(false)}
-        />
-      ) : (
-        <main className="hero-section">
-          <div className="hero-content">
-            <p className="welcome-small">
-              BUILT FOR UNIABUJA STUDENTS
-            </p>
-
-            <h1>
-              Buy and sell within your campus.
-            </h1>
-
-            <p>
-              UniAbuja Market connects students with
-              products, services and student-owned stores.
-            </p>
-
+        {!user && (
+          <div
+            style={{
+              textAlign: 'center',
+              marginTop: '30px',
+            }}
+          >
             <button
               type="button"
-              className="primary-btn"
               onClick={() => setShowAuth(true)}
             >
-              Get Started
+              Login / Create Account
             </button>
           </div>
-        </main>
-      )}
+        )}
+      </main>
     </div>
   )
 }
