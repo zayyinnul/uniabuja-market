@@ -13,7 +13,8 @@
     ]
   },
   "vars": {
-    "AUTOMATED_PAYOUTS_ENABLED": "false"
+    "AUTOMATED_PAYOUTS_ENABLED": "false",
+    "LIVE_PAYOUTS_ENABLED": "false"
   },
   "triggers": {
     "crons": [

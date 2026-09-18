@@ -490,6 +490,24 @@ async function processVendorPayout(
     )
 
   // -------------------------------------------------------
+  // SECOND SAFETY LOCK
+  // -------------------------------------------------------
+  // BOTH AUTOMATED_PAYOUTS_ENABLED AND
+  // LIVE_PAYOUTS_ENABLED must be "true"
+  // before any real-money transfer can be created.
+
+  if (
+    env.LIVE_PAYOUTS_ENABLED !==
+    'true'
+  ) {
+    console.log(
+      `Payout ${payout.id}: LIVE_PAYOUTS_ENABLED is not true. No real transfer will be created.`
+    )
+
+    return
+  }
+
+  // -------------------------------------------------------
   // CREATE PAYSTACK TRANSFER
   // -------------------------------------------------------
 
@@ -558,7 +576,6 @@ async function processVendorPayout(
       transferData?.message ||
       'Paystack transfer request failed'
 
-    // Important:
     // A non-OK HTTP response does NOT automatically
     // mean the transfer itself failed.
     //
@@ -726,7 +743,6 @@ async function processPendingVendorPayouts(
         error
       )
 
-      // IMPORTANT:
       // Unexpected Worker errors do not automatically
       // change the payout status. The next cron cycle
       // can safely try again using the same reference.
@@ -954,12 +970,11 @@ export default {
           })
         }
 
-        // A failed payout may only be moved to failed again.
+        // Success is allowed from processing/pending.
         if (
           eventName ===
             'transfer.success'
         ) {
-          // Success is allowed from processing/pending.
           if (
             ![
               'processing',
@@ -986,6 +1001,7 @@ export default {
           )
         }
 
+        // A failed payout may only be moved to failed again.
         if (
           eventName ===
             'transfer.failed'
