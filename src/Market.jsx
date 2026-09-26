@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { supabase } from './lib/supabase'
 
-function Market({ user, onBack }) {
+function Market({ user, onBack, onCart }) {
   const [products, setProducts] = useState([])
   const [loading, setLoading] = useState(true)
   const [addingProduct, setAddingProduct] = useState(null)
@@ -134,13 +134,30 @@ function Market({ user, onBack }) {
           UniAbuja Market
         </div>
 
-        <button
-          type="button"
-          className="back-button"
-          onClick={onBack}
+        <div
+          style={{
+            display: 'flex',
+            gap: '8px',
+            alignItems: 'center',
+            flexWrap: 'wrap',
+          }}
         >
-          ← Back to Dashboard
-        </button>
+          <button
+            type="button"
+            className="back-button"
+            onClick={onCart}
+          >
+            🛒 View Cart
+          </button>
+
+          <button
+            type="button"
+            className="back-button"
+            onClick={onBack}
+          >
+            ← Back to Dashboard
+          </button>
+        </div>
       </nav>
 
       <main className="market-container">
