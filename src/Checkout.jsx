@@ -314,6 +314,20 @@ function Checkout({ user, onBack, onOrderCreated }) {
     setMessage('')
   }
 
+  const handleDeliveryMethodChange = (
+    method
+  ) => {
+    if (
+      placingOrder ||
+      retryingPayment
+    ) {
+      return
+    }
+
+    setMessage('')
+    setDeliveryMethod('vendor')
+  }
+
   const getPaymentApiUrl = () => {
     const isLocal =
       window.location.hostname ===
@@ -1085,10 +1099,11 @@ function Checkout({ user, onBack, onOrderCreated }) {
 
                   <button
                     type="button"
-                    onClick={() => {
-                      setMessage('')
-                      setDeliveryMethod('vendor')
-                    }}
+                    onClick={() =>
+                      handleDeliveryMethodChange(
+                        'vendor'
+                      )
+                    }
                     disabled={
                       placingOrder ||
                       retryingPayment ||
@@ -1099,10 +1114,16 @@ function Checkout({ user, onBack, onOrderCreated }) {
                       padding: '14px',
                       textAlign: 'left',
                       border:
-                        '2px solid #111',
+                        deliveryMethod ===
+                        'vendor'
+                          ? '2px solid #111'
+                          : '1px solid #ddd',
                       borderRadius: '10px',
                       background:
-                        '#f5f5f5',
+                        deliveryMethod ===
+                        'vendor'
+                          ? '#f5f5f5'
+                          : '#fff',
                       cursor:
                         selectedZoneId
                           ? 'pointer'
@@ -1125,11 +1146,14 @@ function Checkout({ user, onBack, onOrderCreated }) {
                     <strong>
                       {!selectedZoneId
                         ? 'Select area'
-                        : quoteLoading
-                        ? 'Calculating...'
-                        : deliveryFee === 0
-                        ? '🎉 Free delivery'
-                        : `₦${deliveryFee.toLocaleString()}`}
+                        : deliveryMethod ===
+                          'vendor'
+                        ? quoteLoading
+                          ? 'Calculating...'
+                          : deliveryFee === 0
+                          ? '🎉 Free delivery'
+                          : `₦${deliveryFee.toLocaleString()}`
+                        : '—'}
                     </strong>
 
                   </button>
