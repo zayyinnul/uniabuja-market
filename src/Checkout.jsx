@@ -16,6 +16,7 @@ function Checkout({ user, onBack, onOrderCreated }) {
 
   const [selectedZoneId, setSelectedZoneId] = useState('')
 
+  const [deliveryMethod, setDeliveryMethod] = useState('vendor')
   const [deliveryFee, setDeliveryFee] = useState(0)
   const [checkoutTotal, setCheckoutTotal] = useState(0)
   const [quoteLoading, setQuoteLoading] = useState(false)
@@ -33,6 +34,14 @@ function Checkout({ user, onBack, onOrderCreated }) {
     loadDeliveryZones()
   }, [])
 
+  /*
+    Check whether the saved pending payment order
+    is still valid.
+
+    If it was cancelled, paid, or no longer exists,
+    clear the stale sessionStorage value so Checkout
+    becomes usable again.
+  */
   useEffect(() => {
     const checkPendingOrder = async () => {
       if (!pendingOrderId) return
@@ -65,6 +74,14 @@ function Checkout({ user, onBack, onOrderCreated }) {
     checkPendingOrder()
   }, [pendingOrderId, user.id])
 
+  /*
+    When returning from Paystack with the browser Back button,
+    the browser may restore the old React state instead of
+    reloading the page.
+
+    Reset the temporary payment state and re-check the
+    saved pending order.
+  */
   useEffect(() => {
     const handlePageShow = () => {
       submittingRef.current = false
@@ -101,7 +118,10 @@ function Checkout({ user, onBack, onOrderCreated }) {
       cartItems.length > 0 &&
       selectedZoneId
     ) {
-      loadDeliveryQuote(selectedZoneId)
+      loadDeliveryQuote(
+        'vendor',
+        selectedZoneId
+      )
     }
   }, [
     cartItems,
@@ -202,6 +222,7 @@ function Checkout({ user, onBack, onOrderCreated }) {
   }
 
   const loadDeliveryQuote = async (
+    method,
     zoneId
   ) => {
     if (!zoneId) {
@@ -404,6 +425,10 @@ function Checkout({ user, onBack, onOrderCreated }) {
       paymentData.reference
     )
 
+    /*
+      Keep the order ID temporarily so if the user
+      backs out of Paystack, they can retry the same order.
+    */
     sessionStorage.setItem(
       'uniabuja_pending_payment_order',
       orderId
@@ -422,6 +447,11 @@ function Checkout({ user, onBack, onOrderCreated }) {
       return
     }
 
+    /*
+      If an unpaid order already exists from a previous
+      Paystack attempt, retry that payment instead of
+      creating another order.
+    */
     if (pendingOrderId) {
       setRetryingPayment(true)
       setMessage('')
@@ -558,6 +588,10 @@ function Checkout({ user, onBack, onOrderCreated }) {
   }
 
   const handleBack = () => {
+    /*
+      Clear only the temporary checkout payment state.
+      The actual order remains safely in the database.
+    */
     submittingRef.current = false
     setPlacingOrder(false)
     setRetryingPayment(false)
@@ -747,6 +781,8 @@ function Checkout({ user, onBack, onOrderCreated }) {
 
           <div className="checkout-layout">
 
+            {/* ORDER SUMMARY */}
+
             <section className="checkout-card">
 
               <h2>
@@ -907,6 +943,9 @@ function Checkout({ user, onBack, onOrderCreated }) {
 
             </section>
 
+
+            {/* DELIVERY DETAILS */}
+
             <section className="checkout-card">
 
               <h2>
@@ -940,6 +979,7 @@ function Checkout({ user, onBack, onOrderCreated }) {
                   }
                 />
 
+
                 <label>
                   Phone number
                 </label>
@@ -960,6 +1000,7 @@ function Checkout({ user, onBack, onOrderCreated }) {
                     Boolean(pendingOrderId)
                   }
                 />
+
 
                 <label>
                   Delivery area
@@ -1005,6 +1046,7 @@ function Checkout({ user, onBack, onOrderCreated }) {
 
                 </select>
 
+
                 <label>
                   Delivery address
                 </label>
@@ -1026,29 +1068,74 @@ function Checkout({ user, onBack, onOrderCreated }) {
                   }
                 />
 
+
+                <label>
+                  Delivery method
+                </label>
+
                 <div
                   style={{
-                    marginTop: '4px',
+                    display: 'grid',
+                    gap: '10px',
                     marginBottom: '20px',
-                    padding: '14px',
-                    border: '1px solid #ddd',
-                    borderRadius: '10px',
-                    background: '#f8f8f8',
                   }}
                 >
 
-                  <strong>
-                    🏪 Vendor delivery
-                  </strong>
+                  {/* VENDOR DELIVERY */}
 
-                  <br />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMessage('')
+                      setDeliveryMethod('vendor')
+                    }}
+                    disabled={
+                      placingOrder ||
+                      retryingPayment ||
+                      Boolean(pendingOrderId) ||
+                      !selectedZoneId
+                    }
+                    style={{
+                      padding: '14px',
+                      textAlign: 'left',
+                      border:
+                        '2px solid #111',
+                      borderRadius: '10px',
+                      background:
+                        '#f5f5f5',
+                      cursor:
+                        selectedZoneId
+                          ? 'pointer'
+                          : 'not-allowed',
+                    }}
+                  >
 
-                  <span>
-                    Your order will be delivered by the vendor.
-                    The delivery fee shown above is included in your payment.
-                  </span>
+                    <strong>
+                      🏪 Vendor delivery
+                    </strong>
+
+                    <br />
+
+                    <span>
+                      Delivered by the vendor
+                    </span>
+
+                    <br />
+
+                    <strong>
+                      {!selectedZoneId
+                        ? 'Select area'
+                        : quoteLoading
+                        ? 'Calculating...'
+                        : deliveryFee === 0
+                        ? '🎉 Free delivery'
+                        : `₦${deliveryFee.toLocaleString()}`}
+                    </strong>
+
+                  </button>
 
                 </div>
+
 
                 {!pendingOrderId && (
                   <button
