@@ -1,11 +1,15 @@
 import { useEffect, useState } from 'react'
 import { supabase } from './lib/supabase'
+import OrderChat from './OrderChat'
 
 function VendorOrders({ user, onBack }) {
   const [orders, setOrders] = useState([])
   const [loading, setLoading] = useState(true)
   const [message, setMessage] = useState('')
   const [updatingOrder, setUpdatingOrder] = useState(null)
+  const [findingRiders, setFindingRiders] = useState(null)
+  const [assigningRider, setAssigningRider] = useState(null)
+  const [availableRiders, setAvailableRiders] = useState({})
 
   useEffect(() => {
     loadVendorOrders()
@@ -48,10 +52,50 @@ function VendorOrders({ user, onBack }) {
         throw new Error(vendorError.message)
       }
 
+      const vendorOrderIds = (vendorOrderData || []).map(
+        (item) => item.id
+      )
+
+      let deliveryData = []
+
+      if (vendorOrderIds.length > 0) {
+        const { data: deliveries, error: deliveryError } =
+          await supabase
+            .from('deliveries')
+            .select(`
+              id,
+              vendor_order_id,
+              delivery_method,
+              rider_id,
+              delivery_fee,
+              status,
+              rider_request_status,
+              zone_id,
+              created_at,
+              updated_at
+            `)
+            .in('vendor_order_id', vendorOrderIds)
+
+        if (deliveryError) {
+          console.error(
+            'Delivery loading error:',
+            deliveryError
+          )
+          throw new Error(deliveryError.message)
+        }
+
+        deliveryData = deliveries || []
+      }
+
       const statusMap = {}
+      const deliveryMap = {}
 
       ;(vendorOrderData || []).forEach((vendorOrder) => {
         statusMap[vendorOrder.order_id] = vendorOrder
+      })
+
+      ;(deliveryData || []).forEach((delivery) => {
+        deliveryMap[delivery.vendor_order_id] = delivery
       })
 
       const groupedOrders = {}
@@ -59,6 +103,9 @@ function VendorOrders({ user, onBack }) {
       ;(data || []).forEach((item) => {
         if (!groupedOrders[item.order_id]) {
           const vendorOrder = statusMap[item.order_id]
+          const delivery = vendorOrder
+            ? deliveryMap[vendorOrder.id] || null
+            : null
 
           groupedOrders[item.order_id] = {
             order_id: item.order_id,
@@ -71,9 +118,9 @@ function VendorOrders({ user, onBack }) {
             payment_status:
               item.payment_status || 'unpaid',
             delivery_address: item.delivery_address,
-            phone: item.phone,
             order_created_at: item.order_created_at,
             vendor_order_id: vendorOrder?.id || null,
+            delivery,
             items: [],
           }
         }
@@ -92,11 +139,145 @@ function VendorOrders({ user, onBack }) {
 
       setMessage(
         error.message ||
-        'Could not load your incoming orders.'
+          'Could not load your incoming orders.'
       )
     }
 
     setLoading(false)
+  }
+
+  const findAvailableRiders = async (order) => {
+    if (!order.delivery?.id) {
+      setMessage(
+        'Delivery record not found for this order.'
+      )
+      return
+    }
+
+    if (order.payment_status !== 'paid') {
+      setMessage(
+        'Payment must be confirmed before selecting a rider.'
+      )
+      return
+    }
+
+    setFindingRiders(order.order_id)
+    setMessage('')
+
+    try {
+      const { data, error } = await supabase.rpc(
+        'get_available_delivery_riders',
+        {
+          p_delivery_id: order.delivery.id,
+        }
+      )
+
+      if (error) {
+        console.error(
+          'Available riders error:',
+          error
+        )
+        throw new Error(error.message)
+      }
+
+      const riders = data || []
+
+      setAvailableRiders((current) => ({
+        ...current,
+        [order.order_id]: riders,
+      }))
+
+      if (riders.length === 0) {
+        setMessage(
+          'No approved riders are currently available for this delivery zone.'
+        )
+      }
+    } catch (error) {
+      console.error(
+        'Find available riders error:',
+        error
+      )
+
+      setMessage(
+        error.message ||
+          'Could not find available riders.'
+      )
+    }
+
+    setFindingRiders(null)
+  }
+
+  const assignRider = async (order, rider) => {
+    if (!order.delivery?.id) {
+      setMessage(
+        'Delivery record not found for this order.'
+      )
+      return
+    }
+
+    if (!rider?.rider_id) {
+      setMessage('Invalid rider selected.')
+      return
+    }
+
+    setAssigningRider(order.order_id)
+    setMessage('')
+
+    try {
+      const { error } = await supabase.rpc(
+        'vendor_assign_delivery_rider',
+        {
+          p_delivery_id: order.delivery.id,
+          p_rider_id: rider.rider_id,
+        }
+      )
+
+      if (error) {
+        console.error(
+          'Assign rider error:',
+          error
+        )
+        throw new Error(error.message)
+      }
+
+      setOrders((currentOrders) =>
+        currentOrders.map((currentOrder) =>
+          currentOrder.order_id === order.order_id
+            ? {
+                ...currentOrder,
+                delivery: {
+                  ...currentOrder.delivery,
+                  rider_id: rider.rider_id,
+                  rider_request_status: 'assigned',
+                  status: 'assigned',
+                },
+              }
+            : currentOrder
+        )
+      )
+
+      setAvailableRiders((current) => {
+        const updated = { ...current }
+        delete updated[order.order_id]
+        return updated
+      })
+
+      setMessage(
+        `${rider.rider_name || 'Rider'} has been assigned to this delivery.`
+      )
+    } catch (error) {
+      console.error(
+        'Assign rider error:',
+        error
+      )
+
+      setMessage(
+        error.message ||
+          'Could not assign this rider.'
+      )
+    }
+
+    setAssigningRider(null)
   }
 
   const updateStatus = async (order) => {
@@ -147,6 +328,17 @@ function VendorOrders({ user, onBack }) {
           'Vendor status update error:',
           error
         )
+
+        if (
+          error.message?.includes(
+            'Vendor order cannot advance until the parent order is paid'
+          )
+        ) {
+          throw new Error(
+            'Payment required: This order has not been paid for yet. You can accept it once payment is confirmed.'
+          )
+        }
+
         throw new Error(error.message)
       }
 
@@ -165,7 +357,7 @@ function VendorOrders({ user, onBack }) {
 
       setMessage(
         error.message ||
-        'Could not update the order status.'
+          'Could not update the order status.'
       )
     }
 
@@ -217,6 +409,252 @@ function VendorOrders({ user, onBack }) {
     }
 
     return statusFlow[currentIndex + 1]
+  }
+
+  const getDeliveryAction = (order) => {
+    const delivery = order.delivery
+
+    if (!delivery) {
+      return null
+    }
+
+    if (
+      delivery.rider_id &&
+      delivery.status === 'assigned'
+    ) {
+      return (
+        <div
+          style={{
+            background: '#ecfdf5',
+            border: '1px solid #10b981',
+            borderRadius: '10px',
+            padding: '12px 14px',
+            marginTop: '12px',
+            color: '#065f46',
+          }}
+        >
+          <strong>🛵 RIDER ASSIGNED</strong>
+
+          <p
+            style={{
+              margin: '5px 0 0',
+            }}
+          >
+            A rider has been assigned to this
+            delivery. You can continue processing
+            the order.
+          </p>
+        </div>
+      )
+    }
+
+    if (
+      delivery.rider_request_status === 'assigned' &&
+      delivery.rider_id
+    ) {
+      return (
+        <div
+          style={{
+            background: '#ecfdf5',
+            border: '1px solid #10b981',
+            borderRadius: '10px',
+            padding: '12px 14px',
+            marginTop: '12px',
+            color: '#065f46',
+          }}
+        >
+          <strong>🛵 RIDER ASSIGNED</strong>
+
+          <p
+            style={{
+              margin: '5px 0 0',
+            }}
+          >
+            A rider has been assigned to this
+            delivery. You can continue processing
+            the order.
+          </p>
+        </div>
+      )
+    }
+
+    if (
+      delivery.delivery_method === 'vendor' &&
+      delivery.status === 'pending' &&
+      order.payment_status === 'paid'
+    ) {
+      const riders =
+        availableRiders[order.order_id]
+
+      return (
+        <div
+          style={{
+            background: '#f8fafc',
+            border: '1px solid #cbd5e1',
+            borderRadius: '10px',
+            padding: '14px',
+            marginTop: '12px',
+          }}
+        >
+          <strong>🚚 DELIVERY</strong>
+
+          <p
+            style={{
+              margin: '6px 0 12px',
+            }}
+          >
+            You can deliver this order yourself,
+            or select an available rider to deliver
+            it for you.
+          </p>
+
+          <button
+            type="button"
+            className="primary-btn"
+            disabled={
+              findingRiders === order.order_id
+            }
+            onClick={() =>
+              findAvailableRiders(order)
+            }
+          >
+            {findingRiders === order.order_id
+              ? 'Finding Riders...'
+              : 'Find Available Riders'}
+          </button>
+
+          {Array.isArray(riders) && (
+            <div
+              style={{
+                marginTop: '14px',
+              }}
+            >
+              {riders.length === 0 ? (
+                <div
+                  style={{
+                    background: '#fff7ed',
+                    border: '1px solid #f97316',
+                    borderRadius: '10px',
+                    padding: '12px 14px',
+                    color: '#9a3412',
+                  }}
+                >
+                  <strong>
+                    No riders available
+                  </strong>
+
+                  <p
+                    style={{
+                      margin: '5px 0 0',
+                    }}
+                  >
+                    There are currently no approved
+                    riders available for this delivery
+                    zone.
+                  </p>
+                </div>
+              ) : (
+                <div>
+                  <strong
+                    style={{
+                      display: 'block',
+                      marginBottom: '10px',
+                    }}
+                  >
+                    Available Riders
+                  </strong>
+
+                  <div
+                    style={{
+                      display: 'grid',
+                      gap: '10px',
+                    }}
+                  >
+                    {riders.map((rider) => (
+                      <div
+                        key={rider.rider_id}
+                        style={{
+                          background: '#ffffff',
+                          border: '1px solid #e2e8f0',
+                          borderRadius: '10px',
+                          padding: '12px',
+                        }}
+                      >
+                        <div
+                          style={{
+                            display: 'flex',
+                            justifyContent:
+                              'space-between',
+                            alignItems: 'center',
+                            gap: '12px',
+                          }}
+                        >
+                          <div>
+                            <strong>
+                              🛵{' '}
+                              {rider.rider_name ||
+                                'Available Rider'}
+                            </strong>
+
+                            {rider.rider_phone && (
+                              <p
+                                style={{
+                                  margin:
+                                    '4px 0 0',
+                                  fontSize: '13px',
+                                  color: '#64748b',
+                                }}
+                              >
+                                {rider.rider_phone}
+                              </p>
+                            )}
+
+                            <p
+                              style={{
+                                margin:
+                                  '4px 0 0',
+                                fontWeight: '600',
+                              }}
+                            >
+                              Rider fee: ₦
+                              {Number(
+                                rider.rider_fee || 0
+                              ).toLocaleString()}
+                            </p>
+                          </div>
+
+                          <button
+                            type="button"
+                            className="primary-btn"
+                            disabled={
+                              assigningRider ===
+                              order.order_id
+                            }
+                            onClick={() =>
+                              assignRider(
+                                order,
+                                rider
+                              )
+                            }
+                          >
+                            {assigningRider ===
+                            order.order_id
+                              ? 'Assigning...'
+                              : 'Select Rider'}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )
+    }
+
+    return null
   }
 
   if (loading) {
@@ -411,12 +849,6 @@ function VendorOrders({ user, onBack }) {
                     </div>
 
                     <div>
-                      <strong>Phone</strong>
-
-                      <p>{order.phone}</p>
-                    </div>
-
-                    <div>
                       <strong>
                         Delivery location
                       </strong>
@@ -447,6 +879,8 @@ function VendorOrders({ user, onBack }) {
                     </div>
                   </div>
 
+                  {getDeliveryAction(order)}
+
                   {nextStatus && (
                     <button
                       type="button"
@@ -467,6 +901,18 @@ function VendorOrders({ user, onBack }) {
                           )}`}
                     </button>
                   )}
+
+                  {order.order_status !== 'cancelled' &&
+                    order.vendor_order_id && (
+                      <OrderChat
+                        user={user}
+                        orderId={order.order_id}
+                        title={`Chat about order #${order.order_id.slice(
+                          0,
+                          8
+                        )}`}
+                      />
+                    )}
 
                   {order.order_status ===
                     'delivered' && (

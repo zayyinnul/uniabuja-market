@@ -17,7 +17,6 @@ function Product({ user, onBack, onProductCreated }) {
     setMessage('')
 
     try {
-      // Find the store belonging to the logged-in user
       const { data: store, error: storeError } = await supabase
         .from('stores')
         .select('id')
@@ -32,9 +31,19 @@ function Product({ user, onBack, onProductCreated }) {
         throw new Error('You need to create a store first.')
       }
 
+      const productPrice = Number(price)
+      const productStock = Number(stock)
+
+      if (!Number.isFinite(productPrice) || productPrice <= 0) {
+        throw new Error('Please enter a valid product price.')
+      }
+
+      if (!Number.isInteger(productStock) || productStock < 0) {
+        throw new Error('Please enter a valid stock quantity.')
+      }
+
       let imageUrl = null
 
-      // Upload product image
       if (image) {
         const fileExt = image.name.split('.').pop()
         const fileName = `${user.id}-${Date.now()}.${fileExt}`
@@ -55,21 +64,21 @@ function Product({ user, onBack, onProductCreated }) {
         imageUrl = data.publicUrl
       }
 
-      // Create product
-      const { data: product, error: productError } = await supabase
-        .from('products')
-        .insert({
-          vendor_id: user.id,
-          name,
-          description,
-          price: Number(price),
-          category,
-          image_url: imageUrl,
-          stock: Number(stock),
-          status: 'active',
-        })
-        .select()
-        .single()
+      const { data: product, error: productError } =
+        await supabase
+          .from('products')
+          .insert({
+            vendor_id: user.id,
+            name: name.trim(),
+            description: description.trim(),
+            price: productPrice,
+            category,
+            image_url: imageUrl,
+            stock: productStock,
+            status: 'active',
+          })
+          .select()
+          .single()
 
       if (productError) {
         throw productError
@@ -79,10 +88,10 @@ function Product({ user, onBack, onProductCreated }) {
 
       setTimeout(() => {
         onProductCreated(product)
-      }, 1000)
+      }, 700)
 
     } catch (error) {
-      console.error(error)
+      console.error('Product error:', error)
       setMessage(error.message || 'Something went wrong.')
     } finally {
       setLoading(false)
@@ -112,7 +121,10 @@ function Product({ user, onBack, onProductCreated }) {
           </p>
         </div>
 
-        <form onSubmit={handleSubmit} className="store-form">
+        <form
+          onSubmit={handleSubmit}
+          className="store-form"
+        >
 
           <label>
             Product name
@@ -120,7 +132,9 @@ function Product({ user, onBack, onProductCreated }) {
               type="text"
               placeholder="e.g. Chicken Shawarma"
               value={name}
-              onChange={(e) => setName(e.target.value)}
+              onChange={(e) =>
+                setName(e.target.value)
+              }
               required
             />
           </label>
@@ -130,7 +144,9 @@ function Product({ user, onBack, onProductCreated }) {
             <textarea
               placeholder="Describe your product..."
               value={description}
-              onChange={(e) => setDescription(e.target.value)}
+              onChange={(e) =>
+                setDescription(e.target.value)
+              }
               rows="4"
               required
             />
@@ -142,8 +158,11 @@ function Product({ user, onBack, onProductCreated }) {
               type="number"
               placeholder="e.g. 2500"
               value={price}
-              onChange={(e) => setPrice(e.target.value)}
+              onChange={(e) =>
+                setPrice(e.target.value)
+              }
               min="1"
+              step="0.01"
               required
             />
           </label>
@@ -152,17 +171,35 @@ function Product({ user, onBack, onProductCreated }) {
             Category
             <select
               value={category}
-              onChange={(e) => setCategory(e.target.value)}
+              onChange={(e) =>
+                setCategory(e.target.value)
+              }
               required
             >
-              <option value="">Select a category</option>
-              <option value="Food & Drinks">Food & Drinks</option>
-              <option value="Fashion">Fashion</option>
-              <option value="Electronics">Electronics</option>
-              <option value="Beauty">Beauty</option>
-              <option value="Books">Books</option>
-              <option value="Services">Services</option>
-              <option value="Other">Other</option>
+              <option value="">
+                Select a category
+              </option>
+              <option value="Food & Drinks">
+                Food & Drinks
+              </option>
+              <option value="Fashion">
+                Fashion
+              </option>
+              <option value="Electronics">
+                Electronics
+              </option>
+              <option value="Beauty">
+                Beauty
+              </option>
+              <option value="Books">
+                Books
+              </option>
+              <option value="Services">
+                Services
+              </option>
+              <option value="Other">
+                Other
+              </option>
             </select>
           </label>
 
@@ -172,19 +209,26 @@ function Product({ user, onBack, onProductCreated }) {
               type="number"
               placeholder="e.g. 10"
               value={stock}
-              onChange={(e) => setStock(e.target.value)}
+              onChange={(e) =>
+                setStock(e.target.value)
+              }
               min="0"
+              step="1"
               required
             />
           </label>
 
           <label>
             Product image
+
             <input
               type="file"
               accept="image/*"
-              onChange={(e) => setImage(e.target.files[0])}
+              onChange={(e) =>
+                setImage(e.target.files[0] || null)
+              }
             />
+
             <small>
               Optional. Maximum recommended size: 5MB.
             </small>
@@ -195,7 +239,9 @@ function Product({ user, onBack, onProductCreated }) {
             className="primary-btn store-submit"
             disabled={loading}
           >
-            {loading ? 'Adding product...' : 'Add Product'}
+            {loading
+              ? 'Adding product...'
+              : 'Add Product'}
           </button>
 
         </form>

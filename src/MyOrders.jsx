@@ -1,10 +1,13 @@
 import { useEffect, useState } from 'react'
 import { supabase } from './lib/supabase'
+import OrderChat from './OrderChat'
 
 function MyOrders({ user, onBack }) {
   const [orders, setOrders] = useState([])
   const [loading, setLoading] = useState(true)
   const [message, setMessage] = useState('')
+  const [retryingOrder, setRetryingOrder] = useState(null)
+  const [cancellingOrder, setCancellingOrder] = useState(null)
 
   useEffect(() => {
     loadOrders()
@@ -136,11 +139,149 @@ function MyOrders({ user, onBack }) {
 
       setMessage(
         error.message ||
-        'Could not load your orders.'
+          'Could not load your orders.'
       )
     }
 
     setLoading(false)
+  }
+
+  const retryPayment = async (order) => {
+    if (order.payment_status === 'paid') {
+      setMessage('This order has already been paid for.')
+      return
+    }
+
+    if (
+      order.status === 'cancelled' ||
+      order.payment_status === 'cancelled'
+    ) {
+      setMessage('This order has been cancelled.')
+      return
+    }
+
+    setRetryingOrder(order.id)
+    setMessage('')
+
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession()
+
+      if (!session?.access_token) {
+        throw new Error(
+          'Your session has expired. Please log in again.'
+        )
+      }
+
+      const paymentInitUrl =
+        window.location.hostname === 'localhost'
+          ? 'http://127.0.0.1:8787/api/payments/initialize'
+          : '/api/payments/initialize'
+
+      const response = await fetch(paymentInitUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          order_id: order.id,
+        }),
+      })
+
+      const paymentData = await response.json()
+
+      if (!response.ok || !paymentData.success) {
+        throw new Error(
+          paymentData.message ||
+            paymentData.error ||
+            'Could not initialize payment.'
+        )
+      }
+
+      if (!paymentData.authorization_url) {
+        throw new Error(
+          'Payment link was not returned.'
+        )
+      }
+
+      window.location.href =
+        paymentData.authorization_url
+    } catch (error) {
+      console.error('Retry payment error:', error)
+
+      setMessage(
+        error.message ||
+          'Could not start payment. Please try again.'
+      )
+
+      setRetryingOrder(null)
+    }
+  }
+
+  const cancelOrder = async (order) => {
+    if (order.payment_status === 'paid') {
+      setMessage('Paid orders cannot be cancelled.')
+      return
+    }
+
+    if (
+      order.status === 'cancelled' ||
+      order.payment_status === 'cancelled'
+    ) {
+      setMessage('This order is already cancelled.')
+      return
+    }
+
+    const confirmed = window.confirm(
+      `Cancel order #${order.id.slice(
+        0,
+        8
+      )}?\n\nThis will cancel the unpaid order and cannot be undone.`
+    )
+
+    if (!confirmed) {
+      return
+    }
+
+    setCancellingOrder(order.id)
+    setMessage('')
+
+    try {
+      const { data, error } =
+        await supabase.rpc('cancel_my_order', {
+          p_order_id: order.id,
+        })
+
+      if (error) {
+        throw new Error(error.message)
+      }
+
+      if (data !== true) {
+        throw new Error(
+          'The order could not be cancelled.'
+        )
+      }
+
+      setMessage(
+        `Order #${order.id.slice(
+          0,
+          8
+        )} has been cancelled successfully.`
+      )
+
+      await loadOrders()
+    } catch (error) {
+      console.error('Cancel order error:', error)
+
+      setMessage(
+        error.message ||
+          'Could not cancel this order. Please try again.'
+      )
+    } finally {
+      setCancellingOrder(null)
+    }
   }
 
   const formatDate = (date) => {
@@ -264,6 +405,11 @@ function MyOrders({ user, onBack }) {
               const currentStatusIndex =
                 getStatusIndex(order.status)
 
+              const canCancel =
+                order.payment_status !== 'paid' &&
+                order.payment_status !== 'cancelled' &&
+                order.status === 'pending'
+
               return (
                 <div
                   className="order-card"
@@ -297,26 +443,38 @@ function MyOrders({ user, onBack }) {
                       background:
                         order.payment_status === 'paid'
                           ? '#ecfdf5'
-                          : '#fff7ed',
+                          : order.payment_status ===
+                              'cancelled'
+                            ? '#f3f4f6'
+                            : '#fff7ed',
                       border:
                         order.payment_status === 'paid'
                           ? '1px solid #10b981'
-                          : '1px solid #fb923c',
+                          : order.payment_status ===
+                              'cancelled'
+                            ? '1px solid #9ca3af'
+                            : '1px solid #fb923c',
                       borderRadius: '10px',
                       padding: '12px 14px',
                       margin: '12px 0',
                       color:
                         order.payment_status === 'paid'
                           ? '#065f46'
-                          : '#9a3412',
+                          : order.payment_status ===
+                              'cancelled'
+                            ? '#4b5563'
+                            : '#9a3412',
                     }}
                   >
                     <strong>
                       {order.payment_status === 'paid'
                         ? '💳 PAYMENT CONFIRMED'
-                        : `💳 ${formatStatus(
-                            order.payment_status
-                          )}`}
+                        : order.payment_status ===
+                            'cancelled'
+                          ? '🚫 PAYMENT CANCELLED'
+                          : `💳 ${formatStatus(
+                              order.payment_status
+                            )}`}
                     </strong>
 
                     <p
@@ -326,8 +484,81 @@ function MyOrders({ user, onBack }) {
                     >
                       {order.payment_status === 'paid'
                         ? 'Your payment has been successfully confirmed.'
-                        : 'Your payment is being processed.'}
+                        : order.payment_status ===
+                            'cancelled'
+                          ? 'This order has been cancelled.'
+                          : 'Your payment is still pending.'}
                     </p>
+
+                    {order.payment_status !== 'paid' &&
+                      order.payment_status !==
+                        'cancelled' && (
+                        <div
+                          style={{
+                            display: 'flex',
+                            flexWrap: 'wrap',
+                            gap: '10px',
+                            marginTop: '12px',
+                          }}
+                        >
+                          <button
+                            type="button"
+                            className="primary-btn"
+                            disabled={
+                              retryingOrder === order.id ||
+                              cancellingOrder === order.id
+                            }
+                            onClick={() =>
+                              retryPayment(order)
+                            }
+                          >
+                            {retryingOrder === order.id
+                              ? 'Opening Payment...'
+                              : '💳 Pay Now'}
+                          </button>
+
+                          {canCancel && (
+                            <button
+                              type="button"
+                              disabled={
+                                retryingOrder === order.id ||
+                                cancellingOrder === order.id
+                              }
+                              onClick={() =>
+                                cancelOrder(order)
+                              }
+                              style={{
+                                marginTop: '0',
+                                padding:
+                                  '10px 16px',
+                                borderRadius: '8px',
+                                border:
+                                  '1px solid #dc2626',
+                                background:
+                                  '#fff',
+                                color:
+                                  '#dc2626',
+                                cursor:
+                                  cancellingOrder ===
+                                  order.id
+                                    ? 'not-allowed'
+                                    : 'pointer',
+                                fontWeight: '600',
+                                opacity:
+                                  cancellingOrder ===
+                                  order.id
+                                    ? 0.6
+                                    : 1,
+                              }}
+                            >
+                              {cancellingOrder ===
+                              order.id
+                                ? 'Cancelling...'
+                                : '✕ Cancel Order'}
+                            </button>
+                          )}
+                        </div>
+                      )}
                   </div>
 
                   {/* Delivery progress */}
@@ -344,76 +575,90 @@ function MyOrders({ user, onBack }) {
                       🚚 Delivery progress
                     </strong>
 
-                    <div
-                      style={{
-                        marginTop: '16px',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        gap: '12px',
-                      }}
-                    >
-                      {deliverySteps.map(
-                        (step, index) => {
-                          const completed =
-                            currentStatusIndex >=
-                            index
+                    {order.status ===
+                      'cancelled' ? (
+                      <p
+                        style={{
+                          marginTop: '12px',
+                          color: '#6b7280',
+                        }}
+                      >
+                        This order has been cancelled.
+                      </p>
+                    ) : (
+                      <div
+                        style={{
+                          marginTop: '16px',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: '12px',
+                        }}
+                      >
+                        {deliverySteps.map(
+                          (step, index) => {
+                            const completed =
+                              currentStatusIndex >=
+                              index
 
-                          const current =
-                            currentStatusIndex ===
-                            index
+                            const current =
+                              currentStatusIndex ===
+                              index
 
-                          return (
-                            <div
-                              key={step.key}
-                              style={{
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: '12px',
-                                fontWeight: current
-                                  ? '700'
-                                  : '400',
-                                color: completed
-                                  ? '#065f46'
-                                  : '#64748b',
-                              }}
-                            >
+                            return (
                               <div
+                                key={step.key}
                                 style={{
-                                  width: '34px',
-                                  height: '34px',
-                                  minWidth: '34px',
-                                  borderRadius: '50%',
                                   display: 'flex',
                                   alignItems:
                                     'center',
-                                  justifyContent:
-                                    'center',
-                                  background:
-                                    completed
-                                      ? '#d1fae5'
-                                      : '#e2e8f0',
-                                  border:
-                                    current
-                                      ? '2px solid #10b981'
-                                      : '1px solid #cbd5e1',
+                                  gap: '12px',
+                                  fontWeight: current
+                                    ? '700'
+                                    : '400',
+                                  color: completed
+                                    ? '#065f46'
+                                    : '#64748b',
                                 }}
                               >
-                                {completed
-                                  ? step.icon
-                                  : '○'}
-                              </div>
+                                <div
+                                  style={{
+                                    width: '34px',
+                                    height: '34px',
+                                    minWidth: '34px',
+                                    borderRadius:
+                                      '50%',
+                                    display: 'flex',
+                                    alignItems:
+                                      'center',
+                                    justifyContent:
+                                      'center',
+                                    background:
+                                      completed
+                                        ? '#d1fae5'
+                                        : '#e2e8f0',
+                                    border:
+                                      current
+                                        ? '2px solid #10b981'
+                                        : '1px solid #cbd5e1',
+                                  }}
+                                >
+                                  {completed
+                                    ? step.icon
+                                    : '○'}
+                                </div>
 
-                              <span>
-                                {step.label}
-                                {current
-                                  ? ' — Current'
-                                  : ''}
-                              </span>
-                            </div>
-                          )
-                        }
-                      )}
-                    </div>
+                                <span>
+                                  {step.label}
+                                  {current
+                                    ? ' — Current'
+                                    : ''}
+                                </span>
+                              </div>
+                            )
+                          }
+                        )}
+                      </div>
+                    )}
                   </div>
 
                   <div className="order-items">
@@ -422,11 +667,38 @@ function MyOrders({ user, onBack }) {
                         className="order-item"
                         key={item.id}
                       >
-                        <div className="order-item-image">
+                        <div
+                          className="order-item-image"
+                          style={{
+                            width: '100px',
+                            height: '100px',
+                            minWidth: '100px',
+                            maxWidth: '100px',
+                            minHeight: '100px',
+                            maxHeight: '100px',
+                            flex: '0 0 100px',
+                            overflow: 'hidden',
+                            borderRadius: '10px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            boxSizing: 'border-box',
+                          }}
+                        >
                           {item.product?.image_url ? (
                             <img
                               src={item.product.image_url}
                               alt={item.product.name}
+                              style={{
+                                width: '100%',
+                                height: '100%',
+                                minWidth: '100%',
+                                minHeight: '100%',
+                                maxWidth: '100%',
+                                maxHeight: '100%',
+                                objectFit: 'cover',
+                                display: 'block',
+                              }}
                             />
                           ) : (
                             <span>🛍️</span>
@@ -498,6 +770,18 @@ function MyOrders({ user, onBack }) {
                       </strong>
                     </div>
                   </div>
+
+                  {/* Order chat */}
+                  {order.status !== 'cancelled' && (
+                    <OrderChat
+                      user={user}
+                      orderId={order.id}
+                      title={`Chat about order #${order.id.slice(
+                        0,
+                        8
+                      )}`}
+                    />
+                  )}
                 </div>
               )
             })}

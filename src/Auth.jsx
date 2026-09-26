@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { supabase } from './lib/supabase'
 
-function Auth({ onBack }) {
+function Auth({ onBack, onLogin }) {
   const [isLogin, setIsLogin] = useState(true)
   const [fullName, setFullName] = useState('')
   const [email, setEmail] = useState('')
@@ -16,27 +16,29 @@ function Auth({ onBack }) {
 
     try {
       if (isLogin) {
-        const { data, error } = await supabase.auth.signInWithPassword({
-          email,
-          password,
-        })
+        const { data, error } =
+          await supabase.auth.signInWithPassword({
+            email,
+            password,
+          })
 
         if (error) {
           setMessage(error.message)
         } else if (data.user) {
-          setMessage('Login successful!')
+          onLogin()
         }
       } else {
-        const { data, error } = await supabase.auth.signUp({
-          email,
-          password,
-          options: {
-            data: {
-              full_name: fullName,
+        const { data, error } =
+          await supabase.auth.signUp({
+            email,
+            password,
+            options: {
+              data: {
+                full_name: fullName,
+              },
+              emailRedirectTo: window.location.origin,
             },
-            emailRedirectTo: window.location.origin,
-          },
-        })
+          })
 
         if (error) {
           setMessage(error.message)

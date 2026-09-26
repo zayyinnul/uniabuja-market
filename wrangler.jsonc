@@ -2,6 +2,7 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "uniabuja-market",
   "compatibility_date": "2026-09-11",
+  "compatibility_flags": ["nodejs_compat"],
   "main": "./worker/index.js",
   "assets": {
     "directory": "./dist",
@@ -13,12 +14,19 @@
     ]
   },
   "vars": {
-    "AUTOMATED_PAYOUTS_ENABLED": "false",
-    "LIVE_PAYOUTS_ENABLED": "false"
+    "AUTOMATED_PAYOUTS_ENABLED": "true",
+    "SUPABASE_URL": "https://bkykccypicpnnqcmxmsm.supabase.co",
+    "SUPABASE_PUBLISHABLE_KEY": "sb_publishable_RmwbDTWbdYS0gvw_idXp6g_FL_pvNy0",
+    "LIVE_PAYOUTS_ENABLED": "true"
   },
   "triggers": {
     "crons": [
       "*/5 * * * *"
     ]
+  },
+  "observability": {
+    "logs": {
+      "enabled": true
+    }
   }
 }

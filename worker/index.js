@@ -1,3 +1,11 @@
+import webpush from 'web-push'
+
+const VAPID_PUBLIC_KEY =
+  'BKiYiAZbJUhiZjGYq1F8wc4lpYZ2uL_6g4bxuOSXdYGERyaQ3fllqbKDWkivPAamYXXTZriEOE-o23n22i9DqGg'
+
+const VAPID_SUBJECT =
+  'https://uniabuja-market.mammanabideen.workers.dev'
+
 function jsonResponse(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
     status,
@@ -5,7 +13,7 @@ function jsonResponse(data, status = 200, extraHeaders = {}) {
       'Content-Type': 'application/json',
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Headers':
-        'Content-Type, Authorization, x-paystack-signature',
+        'Content-Type, Authorization, x-paystack-signature, x-push-webhook-secret',
       'Access-Control-Allow-Methods':
         'GET, POST, OPTIONS',
       ...extraHeaders,
@@ -114,6 +122,210 @@ async function updateVendorPayout(
     throw new Error(
       'Could not update vendor payout'
     )
+  }
+}
+
+// ---------------------------------------------------------
+// WEB PUSH
+// ---------------------------------------------------------
+
+async function deletePushSubscription(
+  env,
+  subscriptionId
+) {
+  const response =
+    await supabaseRequest(
+      env,
+      `/rest/v1/push_subscriptions?id=eq.${encodeURIComponent(
+        subscriptionId
+      )}`,
+      {
+        method: 'DELETE',
+        headers: {
+          Prefer: 'return=minimal',
+        },
+      }
+    )
+
+  if (!response.ok) {
+    console.error(
+      `Could not delete expired push subscription ${subscriptionId}:`,
+      await response.text()
+    )
+  }
+}
+
+async function sendPushNotification(
+  env,
+  notification
+) {
+  if (!env.VAPID_PRIVATE_KEY) {
+    console.error(
+      'VAPID_PRIVATE_KEY is not configured.'
+    )
+
+    return {
+      sent: 0,
+      failed: 0,
+      removed: 0,
+    }
+  }
+
+  if (!notification?.user_id) {
+    console.error(
+      'Push notification is missing user_id.'
+    )
+
+    return {
+      sent: 0,
+      failed: 0,
+      removed: 0,
+    }
+  }
+
+  const subscriptionsResponse =
+    await supabaseRequest(
+      env,
+      `/rest/v1/push_subscriptions?user_id=eq.${encodeURIComponent(
+        notification.user_id
+      )}&select=id,endpoint,p256dh,auth`,
+      {
+        method: 'GET',
+      }
+    )
+
+  let subscriptions = null
+
+  try {
+    subscriptions =
+      await subscriptionsResponse.json()
+  } catch {
+    subscriptions = null
+  }
+
+  if (
+    !subscriptionsResponse.ok ||
+    !Array.isArray(subscriptions)
+  ) {
+    console.error(
+      'Could not load push subscriptions:',
+      subscriptions
+    )
+
+    return {
+      sent: 0,
+      failed: 1,
+      removed: 0,
+    }
+  }
+
+  if (!subscriptions.length) {
+    console.log(
+      `No push subscriptions found for user ${notification.user_id}.`
+    )
+
+    return {
+      sent: 0,
+      failed: 0,
+      removed: 0,
+    }
+  }
+
+  console.log(
+    `Found ${subscriptions.length} push subscription(s) for user ${notification.user_id}.`
+  )
+
+  webpush.setVapidDetails(
+    VAPID_SUBJECT,
+    VAPID_PUBLIC_KEY,
+    env.VAPID_PRIVATE_KEY
+  )
+
+  let sent = 0
+  let failed = 0
+  let removed = 0
+
+  const payload =
+    JSON.stringify({
+      title:
+        notification.title ||
+        'UniAbuja Market',
+      message:
+        notification.message ||
+        'You have a new notification.',
+      body:
+        notification.message ||
+        'You have a new notification.',
+      url: '/',
+    })
+
+  for (
+    const subscriptionRow of subscriptions
+  ) {
+    const subscription = {
+      endpoint:
+        subscriptionRow.endpoint,
+      keys: {
+        p256dh:
+          subscriptionRow.p256dh,
+        auth:
+          subscriptionRow.auth,
+      },
+    }
+
+    try {
+      await webpush.sendNotification(
+        subscription,
+        payload
+      )
+
+      sent++
+
+      console.log(
+        `Push notification sent successfully to subscription ${subscriptionRow.id}.`
+      )
+    } catch (error) {
+      const statusCode =
+        error?.statusCode
+
+      console.error(
+        `Push notification failed for subscription ${subscriptionRow.id}:`,
+        JSON.stringify({
+          statusCode,
+          message:
+            error?.message ||
+            'Unknown push error',
+        })
+      )
+
+      failed++
+
+      if (
+        statusCode === 404 ||
+        statusCode === 410
+      ) {
+        await deletePushSubscription(
+          env,
+          subscriptionRow.id
+        )
+
+        removed++
+
+        console.log(
+          `Removed expired push subscription ${subscriptionRow.id}.`
+        )
+      }
+    }
+  }
+
+  console.log(
+    `Push result for ${notification.user_id}: sent=${sent}, failed=${failed}, removed=${removed}`
+  )
+
+  return {
+    sent,
+    failed,
+    removed,
   }
 }
 
@@ -228,8 +440,6 @@ async function reconcileTransfer(
     }
   }
 
-  // A genuine 404 means Paystack has no transfer
-  // for this reference yet.
   if (verifyResponse.status === 404) {
     return {
       found: false,
@@ -237,8 +447,6 @@ async function reconcileTransfer(
     }
   }
 
-  // Any other non-OK response is treated as
-  // a temporary verification problem.
   if (!verifyResponse.ok) {
     console.error(
       'Paystack transfer verification failed:',
@@ -343,8 +551,6 @@ async function reconcileTransfer(
     }
   }
 
-  // pending / otp / queued / processing
-  // Keep our database status as processing.
   return {
     found: true,
     terminal: false,
@@ -369,19 +575,12 @@ async function processVendorPayout(
     return
   }
 
-  // -------------------------------------------------------
-  // FIRST: CHECK WHETHER PAYSTACK ALREADY KNOWS
-  // ABOUT THIS REFERENCE
-  // -------------------------------------------------------
-
   const transferCheck =
     await reconcileTransfer(
       env,
       payout
     )
 
-  // Temporary Paystack verification problem.
-  // Do absolutely nothing and try again later.
   if (
     transferCheck.temporaryError
   ) {
@@ -392,17 +591,11 @@ async function processVendorPayout(
     return
   }
 
-  // Paystack already knows about this transfer.
-  // Never create another transfer.
   if (
     transferCheck.found
   ) {
     return
   }
-
-  // -------------------------------------------------------
-  // LOAD VERIFIED PAYOUT ACCOUNT
-  // -------------------------------------------------------
 
   const accountResponse =
     await supabaseRequest(
@@ -455,10 +648,6 @@ async function processVendorPayout(
     return
   }
 
-  // -------------------------------------------------------
-  // VALIDATE PAYOUT AMOUNT
-  // -------------------------------------------------------
-
   const payoutAmount =
     Number(payout.payout_amount)
 
@@ -489,13 +678,6 @@ async function processVendorPayout(
       payoutAmount * 100
     )
 
-  // -------------------------------------------------------
-  // SECOND SAFETY LOCK
-  // -------------------------------------------------------
-  // BOTH AUTOMATED_PAYOUTS_ENABLED AND
-  // LIVE_PAYOUTS_ENABLED must be "true"
-  // before any real-money transfer can be created.
-
   if (
     env.LIVE_PAYOUTS_ENABLED !==
     'true'
@@ -506,10 +688,6 @@ async function processVendorPayout(
 
     return
   }
-
-  // -------------------------------------------------------
-  // CREATE PAYSTACK TRANSFER
-  // -------------------------------------------------------
 
   const transferResponse =
     await fetch(
@@ -545,9 +723,6 @@ async function processVendorPayout(
       `Paystack transfer returned invalid JSON for payout ${payout.id}.`
     )
 
-    // Do NOT mark failed.
-    // Keep processing so the same reference
-    // can be reconciled later.
     return
   }
 
@@ -567,21 +742,11 @@ async function processVendorPayout(
     })
   )
 
-  // -------------------------------------------------------
-  // PAYSTACK HTTP ERROR
-  // -------------------------------------------------------
-
   if (!transferResponse.ok) {
     const message =
       transferData?.message ||
       'Paystack transfer request failed'
 
-    // A non-OK HTTP response does NOT automatically
-    // mean the transfer itself failed.
-    //
-    // We leave the payout as processing so the next
-    // cron cycle can verify the SAME reference and
-    // safely retry/reconcile.
     console.error(
       `Paystack transfer request was not accepted for payout ${payout.id}:`,
       message
@@ -590,17 +755,12 @@ async function processVendorPayout(
     return
   }
 
-  // -------------------------------------------------------
-  // PAYSTACK APPLICATION-LEVEL FAILURE
-  // -------------------------------------------------------
-
   if (!transferData?.status) {
     console.error(
       `Paystack returned an unsuccessful response for payout ${payout.id}:`,
       transferData
     )
 
-    // Do not permanently fail the payout.
     return
   }
 
@@ -658,8 +818,6 @@ async function processVendorPayout(
     return
   }
 
-  // pending / processing / otp / queued
-  // Keep payout as processing.
   console.log(
     `Payout ${payout.id} remains processing. Paystack status: ${transferStatus}`
   )
@@ -742,10 +900,6 @@ async function processPendingVendorPayouts(
         `Error processing payout ${payout.id}:`,
         error
       )
-
-      // Unexpected Worker errors do not automatically
-      // change the payout status. The next cron cycle
-      // can safely try again using the same reference.
     }
   }
 }
@@ -769,7 +923,7 @@ export default {
           'Access-Control-Allow-Origin':
             '*',
           'Access-Control-Allow-Headers':
-            'Content-Type, Authorization, x-paystack-signature',
+            'Content-Type, Authorization, x-paystack-signature, x-push-webhook-secret',
           'Access-Control-Allow-Methods':
             'GET, POST, OPTIONS',
         },
@@ -789,6 +943,210 @@ export default {
         message:
           'UniAbuja Market API is running',
       })
+    }
+
+    // -------------------------------------------------------
+    // PUSH NOTIFICATION WEBHOOK
+    // -------------------------------------------------------
+
+    if (
+      url.pathname ===
+        '/api/push/notification' &&
+      request.method === 'POST'
+    ) {
+      try {
+        const webhookSecret =
+          request.headers.get(
+            'x-push-webhook-secret'
+          )
+
+        if (
+          !env.PUSH_WEBHOOK_SECRET ||
+          !webhookSecret ||
+          !safeEqual(
+            webhookSecret,
+            env.PUSH_WEBHOOK_SECRET
+          )
+        ) {
+          console.error(
+            'Push webhook rejected: invalid secret.'
+          )
+
+          return jsonResponse(
+            {
+              success: false,
+              message:
+                'Unauthorized',
+            },
+            401
+          )
+        }
+
+        let payload
+
+        try {
+          payload =
+            await request.json()
+        } catch (error) {
+          console.error(
+            'Push webhook contained invalid JSON:',
+            error
+          )
+
+          return jsonResponse(
+            {
+              success: false,
+              message:
+                'Invalid webhook JSON',
+            },
+            400
+          )
+        }
+
+        console.log(
+          'PUSH WEBHOOK PAYLOAD:',
+          JSON.stringify(payload)
+        )
+
+        // ---------------------------------------------------
+        // Resolve the notification from the actual webhook
+        // payload used by this project.
+        //
+        // Current payload:
+        // {
+        //   title,
+        //   message,
+        //   user_id,
+        //   notification_id
+        // }
+        // ---------------------------------------------------
+
+        let notification = null
+
+        if (
+          payload?.notification_id &&
+          payload?.user_id
+        ) {
+          notification = {
+            id:
+              payload.notification_id,
+            user_id:
+              payload.user_id,
+            title:
+              payload.title,
+            message:
+              payload.message,
+          }
+        }
+
+        // Standard Supabase Database Webhook format
+        if (
+          !notification &&
+          payload?.type === 'INSERT' &&
+          payload?.table === 'notifications' &&
+          payload?.schema === 'public' &&
+          payload?.record
+        ) {
+          notification =
+            payload.record
+        }
+
+        // Direct notification record
+        if (
+          !notification &&
+          payload?.id &&
+          payload?.user_id
+        ) {
+          notification =
+            payload
+        }
+
+        // Custom wrapper containing a notification record
+        if (
+          !notification &&
+          payload?.record?.id &&
+          payload?.record?.user_id
+        ) {
+          notification =
+            payload.record
+        }
+
+        if (!notification) {
+          console.warn(
+            'Push webhook payload did not contain a usable notification record.'
+          )
+
+          return jsonResponse({
+            success: true,
+            ignored: true,
+          })
+        }
+
+        if (
+          !notification.id ||
+          !notification.user_id
+        ) {
+          console.error(
+            'Notification record is incomplete:',
+            JSON.stringify(notification)
+          )
+
+          return jsonResponse(
+            {
+              success: false,
+              message:
+                'Notification record is incomplete',
+            },
+            400
+          )
+        }
+
+        console.log(
+          'Sending push notification:',
+          JSON.stringify({
+            id:
+              notification.id,
+            user_id:
+              notification.user_id,
+            title:
+              notification.title,
+            type:
+              notification.type ||
+              'webhook',
+          })
+        )
+
+        const result =
+          await sendPushNotification(
+            env,
+            notification
+          )
+
+        return jsonResponse({
+          success: true,
+          sent:
+            result.sent,
+          failed:
+            result.failed,
+          removed:
+            result.removed,
+        })
+      } catch (error) {
+        console.error(
+          'Push notification webhook error:',
+          error
+        )
+
+        return jsonResponse(
+          {
+            success: false,
+            message:
+              error.message ||
+              'Push notification failed',
+          },
+          500
+        )
+      }
     }
 
     // -------------------------------------------------------
@@ -946,11 +1304,6 @@ export default {
         const payout =
           payouts[0]
 
-        // -----------------------------------------------------
-        // WEBHOOK STATUS PROTECTION
-        // -----------------------------------------------------
-
-        // If already paid, ignore duplicate success events.
         if (
           payout.status === 'paid'
         ) {
@@ -960,7 +1313,6 @@ export default {
           })
         }
 
-        // If already reversed, don't move it back.
         if (
           payout.status === 'reversed'
         ) {
@@ -970,7 +1322,6 @@ export default {
           })
         }
 
-        // Success is allowed from processing/pending.
         if (
           eventName ===
             'transfer.success'
@@ -1001,7 +1352,6 @@ export default {
           )
         }
 
-        // A failed payout may only be moved to failed again.
         if (
           eventName ===
             'transfer.failed'
@@ -1159,8 +1509,8 @@ export default {
             )
 
         return jsonResponse({
-          success: true,
-          banks,
+          status: true,
+          data: banks,
         })
       } catch (error) {
         console.error(
@@ -1305,6 +1655,196 @@ export default {
             message:
               error.message ||
               'Could not verify bank account',
+          },
+          500
+        )
+      }
+    }
+
+    // ---------------------------------------------------------
+    // PAYOUTS: VERIFY EXISTING PAYSTACK RECIPIENT
+    // ---------------------------------------------------------
+
+    if (
+      url.pathname ===
+        '/api/payouts/verify-recipient' &&
+      request.method === 'GET'
+    ) {
+      try {
+        const user =
+          await getAuthenticatedUser(
+            request,
+            env
+          )
+
+        if (!user) {
+          return jsonResponse(
+            {
+              success: false,
+              message:
+                'You must be logged in',
+            },
+            401
+          )
+        }
+
+        const accountResponse =
+          await supabaseRequest(
+            env,
+            `/rest/v1/vendor_payout_accounts?vendor_id=eq.${encodeURIComponent(
+              user.id
+            )}&select=paystack_recipient_code&limit=1`,
+            {
+              method: 'GET',
+            }
+          )
+
+        let accountData = null
+
+        try {
+          accountData =
+            await accountResponse.json()
+        } catch {
+          accountData = null
+        }
+
+        if (
+          !accountResponse.ok ||
+          !Array.isArray(accountData) ||
+          !accountData.length ||
+          !accountData[0]
+            ?.paystack_recipient_code
+        ) {
+          return jsonResponse(
+            {
+              success: false,
+              message:
+                'No Paystack recipient is configured for this vendor account',
+            },
+            404
+          )
+        }
+
+        const recipientCode =
+          accountData[0]
+            .paystack_recipient_code
+
+        const recipientResponse =
+          await fetch(
+            `https://api.paystack.co/transferrecipient/${encodeURIComponent(
+              recipientCode
+            )}`,
+            {
+              method: 'GET',
+              headers: {
+                Authorization:
+                  `Bearer ${env.PAYSTACK_SECRET_KEY}`,
+              },
+            }
+          )
+
+        let recipientData = null
+
+        try {
+          recipientData =
+            await recipientResponse.json()
+        } catch {
+          recipientData = null
+        }
+
+        console.log(
+          'Paystack recipient verification:',
+          JSON.stringify({
+            httpStatus:
+              recipientResponse.status,
+            status:
+              recipientData?.status,
+            message:
+              recipientData?.message,
+            recipientCode:
+              recipientData?.data
+                ?.recipient_code,
+            domain:
+              recipientData?.data
+                ?.domain,
+            active:
+              recipientData?.data
+                ?.active,
+          })
+        )
+
+        if (
+          !recipientResponse.ok ||
+          recipientData?.status !== true
+        ) {
+          return jsonResponse(
+            {
+              success: false,
+              message:
+                recipientData?.message ||
+                'Paystack recipient could not be verified',
+              recipient: null,
+            },
+            recipientResponse.status ||
+              400
+          )
+        }
+
+        const recipient =
+          recipientData.data
+
+        const accountNumber =
+          recipient?.details
+            ?.account_number
+            ? String(
+                recipient.details
+                  .account_number
+              )
+            : null
+
+        return jsonResponse({
+          success: true,
+          message:
+            'Paystack recipient verified successfully',
+          recipient: {
+            recipient_code:
+              recipient.recipient_code,
+            active:
+              recipient.active,
+            domain:
+              recipient.domain,
+            currency:
+              recipient.currency,
+            account_name:
+              recipient.details
+                ?.account_name ||
+              null,
+            account_number_last4:
+              accountNumber
+                ? accountNumber.slice(-4)
+                : null,
+            bank_code:
+              recipient.details
+                ?.bank_code ||
+              null,
+            bank_name:
+              recipient.details
+                ?.bank_name ||
+              null,
+          },
+        })
+      } catch (error) {
+        console.error(
+          'Paystack recipient verification error:',
+          error
+        )
+
+        return jsonResponse(
+          {
+            success: false,
+            message:
+              error.message ||
+              'Could not verify Paystack recipient',
           },
           500
         )
@@ -1746,6 +2286,11 @@ export default {
               }),
             }
           )
+          console.log(
+          'PAYMENT UPDATE RESULT:',
+          updateOrderResponse.status,
+         await updateOrderResponse.clone().text()
+         );
 
         if (
           !updateOrderResponse.ok
@@ -1794,7 +2339,7 @@ export default {
       }
     }
 
-    // ---------------------------------------------------------
+        // ---------------------------------------------------------
     // PAYMENT CALLBACK
     // ---------------------------------------------------------
 
@@ -1810,16 +2355,9 @@ export default {
           )
 
         if (!reference) {
-          return htmlResponse(
-            `
-            <html>
-              <body>
-                <h2>Payment reference missing</h2>
-                <p>We could not identify this payment.</p>
-              </body>
-            </html>
-            `,
-            400
+          return Response.redirect(
+            'https://uniabuja-market.mammanabideen.workers.dev/?payment=error',
+            303
           )
         }
 
@@ -1846,17 +2384,11 @@ export default {
           verifyData.data?.status !==
             'success'
         ) {
-          return htmlResponse(
-            `
-            <html>
-              <body>
-                <h2>Payment was not completed</h2>
-                <p>Please try the payment again.</p>
-                <p>Reference: ${reference}</p>
-              </body>
-            </html>
-            `,
-            400
+          return Response.redirect(
+            `https://uniabuja-market.mammanabideen.workers.dev/?payment=failed&reference=${encodeURIComponent(
+              reference
+            )}`,
+            303
           )
         }
 
@@ -1868,7 +2400,7 @@ export default {
             env,
             `/rest/v1/orders?payment_reference=eq.${encodeURIComponent(
               reference
-            )}&select=id,total_amount,payment_reference,payment_status`,
+            )}&select=id,total_amount,payment_reference,payment_status,customer_id&limit=1`,
             {
               method: 'GET',
             }
@@ -1879,19 +2411,14 @@ export default {
 
         if (
           !orderResponse.ok ||
+          !Array.isArray(orders) ||
           !orders.length
         ) {
-          return htmlResponse(
-            `
-            <html>
-              <body>
-                <h2>Order not found</h2>
-                <p>We could not match this payment to an order.</p>
-                <p>Reference: ${reference}</p>
-              </body>
-            </html>
-            `,
-            404
+          return Response.redirect(
+            `https://uniabuja-market.mammanabideen.workers.dev/?payment=error&reference=${encodeURIComponent(
+              reference
+            )}`,
+            303
           )
         }
 
@@ -1914,16 +2441,11 @@ export default {
           paidAmount !==
           expectedAmount
         ) {
-          return htmlResponse(
-            `
-            <html>
-              <body>
-                <h2>Payment amount mismatch</h2>
-                <p>The amount paid does not match the order.</p>
-              </body>
-            </html>
-            `,
-            400
+          return Response.redirect(
+            `https://uniabuja-market.mammanabideen.workers.dev/?payment=error&order_id=${encodeURIComponent(
+              order.id
+            )}`,
+            303
           )
         }
 
@@ -1931,73 +2453,157 @@ export default {
           order.payment_reference !==
           reference
         ) {
-          return htmlResponse(
-            `
-            <html>
-              <body>
-                <h2>Payment reference mismatch</h2>
-                <p>This payment could not be safely matched to the order.</p>
-              </body>
-            </html>
-            `,
-            400
+          return Response.redirect(
+            `https://uniabuja-market.mammanabideen.workers.dev/?payment=error&order_id=${encodeURIComponent(
+              order.id
+            )}`,
+            303
           )
         }
 
-        const paidResponse =
-          await supabaseRequest(
-            env,
-            '/rest/v1/rpc/mark_order_payment_paid',
-            {
-              method: 'POST',
-              headers: {
-                'Content-Type':
-                  'application/json',
-              },
-              body: JSON.stringify({
-                p_order_id:
-                  order.id,
-                p_reference:
-                  reference,
-              }),
-            }
-          )
+        /*
+          The Paystack callback has no customer access token,
+          so mark_order_payment_paid() cannot use auth.uid()
+          here.
 
-        const paidData =
-          await paidResponse.json()
+          We have already:
+          1. Verified the Paystack transaction.
+          2. Confirmed the order exists.
+          3. Confirmed the Paystack reference belongs to the order.
+          4. Confirmed the amount paid matches the order total.
+
+          Therefore the Worker performs the final server-side
+          payment update using the existing service-role access.
+        */
 
         if (
-          !paidResponse.ok ||
-          paidData !== true
+          order.payment_status !==
+          'paid'
         ) {
-          return htmlResponse(
-            `
-            <html>
-              <body>
-                <h2>Payment received</h2>
-                <p>Your payment was received, but confirmation is still being processed.</p>
-              </body>
-            </html>
-            `,
-            500
-          )
+          const paidAt =
+            new Date().toISOString()
+
+          const updateOrderResponse =
+            await supabaseRequest(
+              env,
+              `/rest/v1/orders?id=eq.${encodeURIComponent(
+                order.id
+              )}&payment_reference=eq.${encodeURIComponent(
+                reference
+              )}`,
+              {
+                method: 'PATCH',
+                headers: {
+                  'Content-Type':
+                    'application/json',
+                  Prefer:
+                    'return=minimal',
+                },
+                body: JSON.stringify({
+                  payment_status:
+                    'paid',
+                  paid_at:
+                    paidAt,
+                  updated_at:
+                    paidAt,
+                }),
+              }
+            )
+
+          if (
+            !updateOrderResponse.ok
+          ) {
+            const updateError =
+              await updateOrderResponse.text()
+
+            console.error(
+              'Could not mark order as paid:',
+              updateError
+            )
+
+            return Response.redirect(
+              `https://uniabuja-market.mammanabideen.workers.dev/?payment=processing&order_id=${encodeURIComponent(
+                order.id
+              )}`,
+              303
+            )
+          }
+
+          /*
+            Remove only the products belonging to this
+            successfully paid order from the customer's cart.
+          */
+
+          const orderItemsResponse =
+            await supabaseRequest(
+              env,
+              `/rest/v1/order_items?order_id=eq.${encodeURIComponent(
+                order.id
+              )}&select=product_id`,
+              {
+                method: 'GET',
+              }
+            )
+
+          let orderItems = null
+
+          try {
+            orderItems =
+              await orderItemsResponse.json()
+          } catch {
+            orderItems = null
+          }
+
+          if (
+            orderItemsResponse.ok &&
+            Array.isArray(orderItems)
+          ) {
+            for (
+              const item of orderItems
+            ) {
+              if (!item?.product_id) {
+                continue
+              }
+
+              const deleteCartResponse =
+                await supabaseRequest(
+                  env,
+                  `/rest/v1/cart_items?customer_id=eq.${encodeURIComponent(
+                    order.customer_id
+                  )}&product_id=eq.${encodeURIComponent(
+                    item.product_id
+                  )}`,
+                  {
+                    method: 'DELETE',
+                    headers: {
+                      Prefer:
+                        'return=minimal',
+                    },
+                  }
+                )
+
+              if (
+                !deleteCartResponse.ok
+              ) {
+                console.error(
+                  `Could not remove product ${item.product_id} from customer cart after payment:`,
+                  await deleteCartResponse.text()
+                )
+              }
+            }
+          } else {
+            console.error(
+              'Could not load order items for cart cleanup:',
+              orderItems
+            )
+          }
         }
 
-        return htmlResponse(
-          `
-          <html>
-            <head>
-              <title>Payment Successful</title>
-            </head>
-            <body>
-              <h2>Payment successful 🎉</h2>
-              <p>Your order has been paid successfully.</p>
-              <p>Reference: ${reference}</p>
-              <p>You can return to UniAbuja Market.</p>
-            </body>
-          </html>
-          `,
-          200
+        return Response.redirect(
+          `https://uniabuja-market.mammanabideen.workers.dev/?payment=success&order_id=${encodeURIComponent(
+            order.id
+          )}`,
+          303
         )
       } catch (error) {
         console.error(
@@ -2005,25 +2611,12 @@ export default {
           error
         )
 
-        return htmlResponse(
-          `
-          <html>
-            <body>
-              <h2>Payment verification failed</h2>
-              <p>
-                ${
-                  error.message ||
-                  'An unexpected error occurred.'
-                }
-              </p>
-            </body>
-          </html>
-          `,
-          500
+        return Response.redirect(
+          'https://uniabuja-market.mammanabideen.workers.dev/?payment=error',
+          303
         )
       }
     }
-
     // ---------------------------------------------------------
     // FRONTEND ASSETS
     // ---------------------------------------------------------

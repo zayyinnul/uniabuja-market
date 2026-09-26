@@ -233,13 +233,40 @@ function Cart({ user, onBack, onCheckout }) {
                   key={item.id}
                 >
 
-                  <div className="cart-item-image">
+                  <div
+                    className="cart-item-image"
+                    style={{
+                      width: '100px',
+                      height: '100px',
+                      minWidth: '100px',
+                      maxWidth: '100px',
+                      minHeight: '100px',
+                      maxHeight: '100px',
+                      flex: '0 0 100px',
+                      overflow: 'hidden',
+                      borderRadius: '10px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      boxSizing: 'border-box',
+                    }}
+                  >
 
                     {item.product?.image_url ? (
 
                       <img
                         src={item.product.image_url}
                         alt={item.product.name}
+                        style={{
+                          width: '100%',
+                          height: '100%',
+                          minWidth: '100%',
+                          minHeight: '100%',
+                          maxWidth: '100%',
+                          maxHeight: '100%',
+                          objectFit: 'cover',
+                          display: 'block',
+                        }}
                       />
 
                     ) : (

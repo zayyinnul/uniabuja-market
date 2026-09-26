@@ -9,6 +9,7 @@ function PayoutAccount({ user, onBack }) {
   const [accountNumber, setAccountNumber] = useState('')
   const [banks, setBanks] = useState([])
   const [selectedBank, setSelectedBank] = useState('')
+  const [bankName, setBankName] = useState('')
   const [accountName, setAccountName] = useState('')
 
   const [loadingAccount, setLoadingAccount] = useState(true)
@@ -18,13 +19,12 @@ function PayoutAccount({ user, onBack }) {
   const [preparingRecipient, setPreparingRecipient] = useState(false)
 
   const [accountSaved, setAccountSaved] = useState(false)
+  const [editing, setEditing] = useState(false)
   const [recipientCode, setRecipientCode] = useState('')
 
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
 
-  // Load the vendor's already-saved payout account directly from Supabase.
-  // This avoids the bank-list Worker endpoint when an account already exists.
   useEffect(() => {
     async function loadSavedAccount() {
       if (!user?.id) {
@@ -63,6 +63,7 @@ function PayoutAccount({ user, onBack }) {
       if (data) {
         setAccountNumber(data.account_number || '')
         setSelectedBank(data.bank_code || '')
+        setBankName(data.bank_name || '')
         setAccountName(data.account_name || '')
 
         setAccountSaved(
@@ -81,10 +82,8 @@ function PayoutAccount({ user, onBack }) {
     loadSavedAccount()
   }, [user?.id])
 
-  // Only load the bank list when the vendor does NOT already have
-  // a saved payout account.
   useEffect(() => {
-    if (loadingAccount || accountSaved) {
+    if (loadingAccount || (accountSaved && !editing)) {
       return
     }
 
@@ -93,8 +92,29 @@ function PayoutAccount({ user, onBack }) {
       setError('')
 
       try {
+        const {
+          data: sessionData,
+          error: sessionError,
+        } = await supabase.auth.getSession()
+
+        if (sessionError) {
+          throw sessionError
+        }
+
+        const accessToken =
+          sessionData?.session?.access_token
+
+        if (!accessToken) {
+          throw new Error('You must be logged in.')
+        }
+
         const response = await fetch(
-          `${WORKER_BASE_URL}/api/payouts/banks`
+          `${WORKER_BASE_URL}/api/payouts/banks`,
+          {
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+            },
+          }
         )
 
         const data = await response.json()
@@ -121,7 +141,7 @@ function PayoutAccount({ user, onBack }) {
     }
 
     loadBanks()
-  }, [loadingAccount, accountSaved])
+  }, [loadingAccount, accountSaved, editing])
 
   async function verifyAccount() {
     setMessage('')
@@ -140,11 +160,30 @@ function PayoutAccount({ user, onBack }) {
     setLoading(true)
 
     try {
+      const {
+        data: sessionData,
+        error: sessionError,
+      } = await supabase.auth.getSession()
+
+      if (sessionError) {
+        throw sessionError
+      }
+
+      const accessToken =
+        sessionData?.session?.access_token
+
+      if (!accessToken) {
+        throw new Error(
+          'Your login session has expired. Please log in again.'
+        )
+      }
+
       const response = await fetch(
         `${WORKER_BASE_URL}/api/payouts/resolve-account`,
         {
           method: 'POST',
           headers: {
+            Authorization: `Bearer ${accessToken}`,
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
@@ -156,16 +195,25 @@ function PayoutAccount({ user, onBack }) {
 
       const data = await response.json()
 
-      if (!response.ok || !data.status) {
+      if (!response.ok || data.success !== true) {
         throw new Error(
           data.message || 'Unable to verify bank account.'
         )
       }
 
-      setAccountName(
+      const verifiedName =
         data.data?.account_name ||
         data.account_name ||
         ''
+
+      const selectedBankObject = banks.find(
+        (bank) =>
+          String(bank.code) === String(selectedBank)
+      )
+
+      setAccountName(verifiedName)
+      setBankName(
+        selectedBankObject?.name || bankName
       )
 
       setMessage('Bank account verified successfully.')
@@ -200,12 +248,14 @@ function PayoutAccount({ user, onBack }) {
     }
 
     const selectedBankObject = banks.find(
-      (bank) => String(bank.code) === String(selectedBank)
+      (bank) =>
+        String(bank.code) === String(selectedBank)
     )
 
-    const bankName =
+    const finalBankName =
       selectedBankObject?.name ||
-      'OPay Digital Services Limited (OPay)'
+      bankName ||
+      'Unknown Bank'
 
     setSaving(true)
 
@@ -234,10 +284,11 @@ function PayoutAccount({ user, onBack }) {
         .update({
           account_name: accountName,
           bank_code: selectedBank,
-          bank_name: bankName,
+          bank_name: finalBankName,
           account_number: accountNumber,
           is_verified: true,
           is_active: true,
+          paystack_recipient_code: null,
           updated_at: new Date().toISOString(),
         })
         .eq('id', existingAccount.id)
@@ -248,7 +299,7 @@ function PayoutAccount({ user, onBack }) {
           vendor_id: user.id,
           account_name: accountName,
           bank_code: selectedBank,
-          bank_name: bankName,
+          bank_name: finalBankName,
           account_number: accountNumber,
           is_verified: true,
           is_active: true,
@@ -268,11 +319,28 @@ function PayoutAccount({ user, onBack }) {
       return
     }
 
+    setBankName(finalBankName)
     setAccountSaved(true)
+    setEditing(false)
+    setRecipientCode('')
+
     setMessage(
-      'Your verified payout account has been saved.'
+      'Your verified payout account has been updated successfully.'
     )
+
     setSaving(false)
+  }
+
+  function startEditing() {
+    setEditing(true)
+    setAccountSaved(false)
+    setRecipientCode('')
+    setMessage('')
+    setError('')
+  }
+
+  function cancelEditing() {
+    window.location.reload()
   }
 
   async function prepareRecipient() {
@@ -318,7 +386,9 @@ function PayoutAccount({ user, onBack }) {
 
       const data = await response.json()
 
-      if (!response.ok || !data.status) {
+      // FIXED:
+      // Worker returns "success", not "status".
+      if (!response.ok || data.success !== true) {
         throw new Error(
           data.message ||
           'Unable to set up the Paystack recipient.'
@@ -437,10 +507,12 @@ function PayoutAccount({ user, onBack }) {
           setAccountNumber(
             e.target.value.replace(/\D/g, '')
           )
-          setAccountSaved(false)
+          setAccountName('')
+          setBankName('')
           setRecipientCode('')
+          setMessage('')
         }}
-        disabled={accountSaved}
+        disabled={accountSaved && !editing}
         placeholder="Enter 10-digit account number"
         style={{
           width: '100%',
@@ -450,7 +522,7 @@ function PayoutAccount({ user, onBack }) {
         }}
       />
 
-      {accountSaved ? (
+      {accountSaved && !editing ? (
         <>
           <label
             style={{
@@ -471,7 +543,7 @@ function PayoutAccount({ user, onBack }) {
               background: '#f9fafb',
             }}
           >
-            OPay Digital Services Limited (OPay)
+            {bankName || 'Bank not available'}
           </div>
 
           <label
@@ -513,6 +585,23 @@ function PayoutAccount({ user, onBack }) {
               Paystack recipient setup.
             </div>
           </div>
+
+          <button
+            onClick={startEditing}
+            style={{
+              width: '100%',
+              padding: '13px',
+              marginBottom: '15px',
+              background: '#111827',
+              color: '#fff',
+              border: 'none',
+              borderRadius: '8px',
+              cursor: 'pointer',
+              fontWeight: '600',
+            }}
+          >
+            Edit Payout Account
+          </button>
 
           {!recipientCode ? (
             <button
@@ -577,8 +666,20 @@ function PayoutAccount({ user, onBack }) {
           <select
             value={selectedBank}
             onChange={(e) => {
-              setSelectedBank(e.target.value)
+              const newBankCode = e.target.value
+
+              const selectedBankObject = banks.find(
+                (bank) =>
+                  String(bank.code) ===
+                  String(newBankCode)
+              )
+
+              setSelectedBank(newBankCode)
+              setBankName(
+                selectedBankObject?.name || ''
+              )
               setAccountName('')
+              setRecipientCode('')
               setMessage('')
               setError('')
             }}
@@ -668,6 +769,7 @@ function PayoutAccount({ user, onBack }) {
                 style={{
                   width: '100%',
                   padding: '13px',
+                  marginBottom: '10px',
                   background: saving
                     ? '#9ca3af'
                     : '#059669',
@@ -684,6 +786,27 @@ function PayoutAccount({ user, onBack }) {
                   ? 'Saving...'
                   : 'Save Payout Account'}
               </button>
+
+              {editing && (
+                <button
+                  onClick={cancelEditing}
+                  disabled={saving}
+                  style={{
+                    width: '100%',
+                    padding: '13px',
+                    background: '#e5e7eb',
+                    color: '#374151',
+                    border: 'none',
+                    borderRadius: '8px',
+                    cursor: saving
+                      ? 'not-allowed'
+                      : 'pointer',
+                    fontWeight: '600',
+                  }}
+                >
+                  Cancel
+                </button>
+              )}
             </>
           )}
         </>

@@ -2,6 +2,10 @@ import { useEffect, useState } from "react";
 import { supabase } from "../lib/supabase";
 import OrderChat from "../OrderChat";
 
+const WORKER_BASE_URL = import.meta.env.DEV
+  ? "http://127.0.0.1:8787"
+  : "";
+
 export default function RiderDashboard({ user, onBack }) {
   const [loading, setLoading] = useState(true);
 
@@ -33,15 +37,25 @@ export default function RiderDashboard({ user, onBack }) {
   const [deliveries, setDeliveries] = useState([]);
   const [deliveriesLoading, setDeliveriesLoading] = useState(false);
 
+  const [availableDeliveries, setAvailableDeliveries] = useState([]);
+  const [availableDeliveriesLoading, setAvailableDeliveriesLoading] =
+    useState(false);
+  const [claimingDelivery, setClaimingDelivery] = useState(null);
+
   // Payout account
   const [payoutAccount, setPayoutAccount] = useState(null);
   const [payoutLoading, setPayoutLoading] = useState(false);
   const [savingPayout, setSavingPayout] = useState(false);
+  const [loadingBanks, setLoadingBanks] = useState(false);
+  const [verifyingPayout, setVerifyingPayout] = useState(false);
 
+  const [payoutBanks, setPayoutBanks] = useState([]);
+  const [selectedPayoutBank, setSelectedPayoutBank] = useState("");
   const [payoutAccountName, setPayoutAccountName] = useState("");
   const [payoutBankName, setPayoutBankName] = useState("");
   const [payoutBankCode, setPayoutBankCode] = useState("");
   const [payoutAccountNumber, setPayoutAccountNumber] = useState("");
+  const [payoutEditing, setPayoutEditing] = useState(false);
 
   const [message, setMessage] = useState("");
 
@@ -53,6 +67,33 @@ export default function RiderDashboard({ user, onBack }) {
       setMessage("Please log in first.");
     }
   }, [user]);
+
+  // Keep available deliveries reasonably fresh while the rider dashboard
+  // is open. This does not assign anything automatically; it simply refreshes
+  // the list of deliveries that this rider is eligible to claim.
+  useEffect(() => {
+    if (!user || !isRider) {
+      return;
+    }
+
+    const interval = setInterval(() => {
+      loadAvailableDeliveries();
+      loadAssignedDeliveries();
+    }, 15000);
+
+    return () => clearInterval(interval);
+  }, [user, isRider]);
+
+  async function getWorkerHeaders() {
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+
+    return {
+      Authorization: `Bearer ${session?.access_token || ""}`,
+      "Content-Type": "application/json",
+    };
+  }
 
   async function loadData() {
     setLoading(true);
@@ -202,12 +243,47 @@ export default function RiderDashboard({ user, onBack }) {
     setFees(feeMap);
     setExistingRates(rateMap);
 
-    // Load payout account
     await loadPayoutAccount();
-
+    await loadPayoutBanks();
     await loadAssignedDeliveries();
+    await loadAvailableDeliveries();
 
     setLoading(false);
+  }
+
+  async function loadPayoutBanks() {
+    setLoadingBanks(true);
+
+    try {
+      const headers = await getWorkerHeaders();
+
+      const response = await fetch(
+        `${WORKER_BASE_URL}/api/payouts/banks`,
+        {
+          method: "GET",
+          headers,
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok || !data?.status) {
+        throw new Error(
+          data?.message || "Unable to load banks."
+        );
+      }
+
+      setPayoutBanks(data.data || []);
+    } catch (error) {
+      console.error("Load payout banks error:", error);
+
+      setMessage(
+        error?.message ||
+          "Unable to load the bank list. Please try again."
+      );
+    } finally {
+      setLoadingBanks(false);
+    }
   }
 
   async function loadPayoutAccount() {
@@ -236,8 +312,6 @@ export default function RiderDashboard({ user, onBack }) {
     if (error) {
       console.error("Payout account error:", error);
 
-      // Do not block the entire dashboard if payout
-      // account access has an RLS/configuration issue.
       setPayoutAccount(null);
       setPayoutLoading(false);
       return;
@@ -250,36 +324,131 @@ export default function RiderDashboard({ user, onBack }) {
       setPayoutBankName(data.bank_name || "");
       setPayoutBankCode(data.bank_code || "");
       setPayoutAccountNumber(data.account_number || "");
+      setSelectedPayoutBank(data.bank_code || "");
     }
 
     setPayoutLoading(false);
+  }
+
+  function handlePayoutBankChange(bankCode) {
+    setSelectedPayoutBank(bankCode);
+
+    const selectedBank = payoutBanks.find(
+      (bank) => String(bank.code) === String(bankCode)
+    );
+
+    setPayoutBankCode(selectedBank?.code || "");
+    setPayoutBankName(selectedBank?.name || "");
+
+    setPayoutAccountName("");
+  }
+
+  async function verifyPayoutAccount() {
+    const accountNumber = payoutAccountNumber.replace(
+      /\s/g,
+      ""
+    );
+
+    if (!selectedPayoutBank) {
+      setMessage("Please select your bank.");
+      return;
+    }
+
+    if (!/^\d{10}$/.test(accountNumber)) {
+      setMessage("Please enter a valid 10-digit account number.");
+      return;
+    }
+
+    const selectedBank = payoutBanks.find(
+      (bank) =>
+        String(bank.code) === String(selectedPayoutBank)
+    );
+
+    if (!selectedBank) {
+      setMessage("Please select a valid bank.");
+      return;
+    }
+
+    setVerifyingPayout(true);
+    setMessage("");
+
+    try {
+      const headers = await getWorkerHeaders();
+
+      const response = await fetch(
+        `${WORKER_BASE_URL}/api/payouts/resolve-account`,
+        {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            account_number: accountNumber,
+            bank_code: selectedBank.code,
+          }),
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok || !data?.success) {
+        throw new Error(
+          data?.message ||
+            "Unable to verify this bank account."
+        );
+      }
+
+      setPayoutAccountName(data.account_name || "");
+      setPayoutBankName(selectedBank.name);
+      setPayoutBankCode(selectedBank.code);
+      setSelectedPayoutBank(selectedBank.code);
+      setPayoutAccountNumber(
+        data.account_number || accountNumber
+      );
+
+      setMessage(
+        `Account verified: ${data.account_name || "Account holder"}`
+      );
+    } catch (error) {
+      console.error("Verify payout account error:", error);
+
+      setPayoutAccountName("");
+
+      setMessage(
+        error?.message ||
+          "Unable to verify this account. Please check the details and try again."
+      );
+    } finally {
+      setVerifyingPayout(false);
+    }
   }
 
   async function savePayoutAccount(e) {
     e.preventDefault();
 
     const accountName = payoutAccountName.trim();
-    const bankName = payoutBankName.trim();
-    const bankCode = payoutBankCode.trim();
-    const accountNumber = payoutAccountNumber.replace(/\s/g, "");
+    const accountNumber = payoutAccountNumber.replace(
+      /\s/g,
+      ""
+    );
 
-    if (!accountName) {
-      setMessage("Please enter your account name.");
-      return;
-    }
+    const selectedBank = payoutBanks.find(
+      (bank) =>
+        String(bank.code) === String(selectedPayoutBank)
+    );
 
-    if (!bankName) {
-      setMessage("Please enter your bank name.");
-      return;
-    }
-
-    if (!bankCode) {
-      setMessage("Please enter your bank code.");
+    if (!selectedBank) {
+      setMessage("Please select your bank.");
       return;
     }
 
     if (!/^\d{10}$/.test(accountNumber)) {
       setMessage("Please enter a valid 10-digit account number.");
+      return;
+    }
+
+    if (!accountName) {
+      setMessage(
+        "Please verify your account before saving it."
+      );
       return;
     }
 
@@ -292,9 +461,12 @@ export default function RiderDashboard({ user, onBack }) {
           .from("rider_payout_accounts")
           .update({
             account_name: accountName,
-            bank_name: bankName,
-            bank_code: bankCode,
+            bank_name: selectedBank.name,
+            bank_code: selectedBank.code,
             account_number: accountNumber,
+            paystack_recipient_code: null,
+            is_verified: true,
+            is_active: true,
             updated_at: new Date().toISOString(),
           })
           .eq("id", payoutAccount.id)
@@ -303,7 +475,11 @@ export default function RiderDashboard({ user, onBack }) {
           .single();
 
         if (error) {
-          console.error("Update payout account error:", error);
+          console.error(
+            "Update payout account error:",
+            error
+          );
+
           setMessage(error.message);
           setSavingPayout(false);
           return;
@@ -320,17 +496,22 @@ export default function RiderDashboard({ user, onBack }) {
           .insert({
             rider_id: user.id,
             account_name: accountName,
-            bank_name: bankName,
-            bank_code: bankCode,
+            bank_name: selectedBank.name,
+            bank_code: selectedBank.code,
             account_number: accountNumber,
-            is_verified: false,
+            paystack_recipient_code: null,
+            is_verified: true,
             is_active: true,
           })
           .select()
           .single();
 
         if (error) {
-          console.error("Create payout account error:", error);
+          console.error(
+            "Create payout account error:",
+            error
+          );
+
           setMessage(error.message);
           setSavingPayout(false);
           return;
@@ -343,6 +524,8 @@ export default function RiderDashboard({ user, onBack }) {
         );
       }
 
+      setPayoutEditing(false);
+
       await loadPayoutAccount();
     } catch (error) {
       console.error("Payout account error:", error);
@@ -354,6 +537,22 @@ export default function RiderDashboard({ user, onBack }) {
     }
 
     setSavingPayout(false);
+  }
+
+  function startEditingPayout() {
+    if (!payoutAccount) {
+      return;
+    }
+
+    setSelectedPayoutBank(payoutAccount.bank_code || "");
+    setPayoutAccountName(payoutAccount.account_name || "");
+    setPayoutBankName(payoutAccount.bank_name || "");
+    setPayoutBankCode(payoutAccount.bank_code || "");
+    setPayoutAccountNumber(
+      payoutAccount.account_number || ""
+    );
+    setPayoutEditing(true);
+    setMessage("");
   }
 
   async function loadAssignedDeliveries() {
@@ -386,6 +585,67 @@ export default function RiderDashboard({ user, onBack }) {
 
     setDeliveries(data || []);
     setDeliveriesLoading(false);
+  }
+
+  async function loadAvailableDeliveries() {
+    setAvailableDeliveriesLoading(true);
+
+    const { data, error } = await supabase.rpc(
+      "get_available_rider_deliveries"
+    );
+
+    if (error) {
+      console.error(
+        "Available deliveries error:",
+        error
+      );
+
+      setAvailableDeliveries([]);
+      setAvailableDeliveriesLoading(false);
+      return;
+    }
+
+    setAvailableDeliveries(data || []);
+    setAvailableDeliveriesLoading(false);
+  }
+
+  async function claimDelivery(deliveryId) {
+    if (!deliveryId || claimingDelivery) {
+      return;
+    }
+
+    setClaimingDelivery(deliveryId);
+    setMessage("");
+
+    const { error } = await supabase.rpc(
+      "claim_delivery",
+      {
+        p_delivery_id: deliveryId,
+      }
+    );
+
+    if (error) {
+      console.error("Claim delivery error:", error);
+
+      setMessage(
+        error?.message ||
+          "This delivery could not be claimed. It may already have been taken."
+      );
+
+      setClaimingDelivery(null);
+
+      await loadAvailableDeliveries();
+      await loadAssignedDeliveries();
+
+      return;
+    }
+
+    setMessage("Delivery claimed successfully.");
+
+    setClaimingDelivery(null);
+
+    await loadAvailableDeliveries();
+    await loadAssignedDeliveries();
   }
 
   function validateApplicationFile(file, label) {
@@ -540,7 +800,8 @@ export default function RiderDashboard({ user, onBack }) {
           passport_photo_path: passportPath,
           student_id_document_path: studentIdPath,
           emergency_contact_name: emergencyContactName.trim(),
-          emergency_contact_phone: emergencyContactPhone.trim(),
+          emergency_contact_phone:
+            emergencyContactPhone.trim(),
           has_vehicle: hasVehicle === "yes",
         })
         .select(
@@ -1291,62 +1552,92 @@ export default function RiderDashboard({ user, onBack }) {
         <div className="dashboard-card">
           {payoutLoading ? (
             <p>Loading payout account...</p>
+          ) : payoutAccount && !payoutEditing ? (
+            <>
+              <div
+                style={{
+                  padding: "12px",
+                  marginBottom: "18px",
+                  borderRadius: "8px",
+                  background: "#f5f5f5",
+                }}
+              >
+                <p>
+                  <strong>Account status:</strong>{" "}
+                  {payoutAccount.is_active
+                    ? "Active"
+                    : "Inactive"}
+                </p>
+
+                <p style={{ marginTop: "6px" }}>
+                  <strong>Verification:</strong>{" "}
+                  {payoutAccount.is_verified
+                    ? "Verified"
+                    : "Pending verification"}
+                </p>
+
+                <p style={{ marginTop: "6px" }}>
+                  <strong>Account name:</strong>{" "}
+                  {payoutAccount.account_name || "Not available"}
+                </p>
+
+                <p style={{ marginTop: "6px" }}>
+                  <strong>Bank:</strong>{" "}
+                  {payoutAccount.bank_name || "Bank"}
+                </p>
+
+                <p style={{ marginTop: "6px" }}>
+                  <strong>Account number:</strong>{" "}
+                  {maskAccountNumber(
+                    payoutAccount.account_number
+                  )}
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={startEditingPayout}
+                style={{
+                  padding: "12px 18px",
+                }}
+              >
+                Update Payout Account
+              </button>
+
+              <p
+                style={{
+                  marginTop: "14px",
+                  fontSize: "13px",
+                  opacity: 0.7,
+                }}
+              >
+                Your bank details are verified through Paystack.
+                Updating the account will require verification
+                again.
+              </p>
+            </>
           ) : (
             <>
-              {payoutAccount && (
-                <div
-                  style={{
-                    padding: "12px",
-                    marginBottom: "18px",
-                    borderRadius: "8px",
-                    background: "#f5f5f5",
-                  }}
-                >
-                  <p>
-                    <strong>Account status:</strong>{" "}
-                    {payoutAccount.is_active
-                      ? "Active"
-                      : "Inactive"}
-                  </p>
-
-                  <p style={{ marginTop: "6px" }}>
-                    <strong>Verification:</strong>{" "}
-                    {payoutAccount.is_verified
-                      ? "Verified"
-                      : "Pending verification"}
-                  </p>
-
-                  <p style={{ marginTop: "6px" }}>
-                    <strong>Current account:</strong>{" "}
-                    {payoutAccount.bank_name || "Bank"} —{" "}
-                    {maskAccountNumber(
-                      payoutAccount.account_number
-                    )}
-                  </p>
-                </div>
-              )}
-
               <form onSubmit={savePayoutAccount}>
                 <div>
                   <label
-                    htmlFor="payout-account-name"
+                    htmlFor="payout-bank"
                     style={{
                       display: "block",
                       marginBottom: "6px",
                       fontWeight: "600",
                     }}
                   >
-                    Account name
+                    Bank
                   </label>
 
-                  <input
-                    id="payout-account-name"
-                    type="text"
-                    value={payoutAccountName}
+                  <select
+                    id="payout-bank"
+                    value={selectedPayoutBank}
                     onChange={(e) =>
-                      setPayoutAccountName(e.target.value)
+                      handlePayoutBankChange(e.target.value)
                     }
-                    placeholder="Name on your bank account"
+                    disabled={loadingBanks || verifyingPayout}
                     style={{
                       width: "100%",
                       padding: "12px",
@@ -1354,67 +1645,22 @@ export default function RiderDashboard({ user, onBack }) {
                       borderRadius: "8px",
                     }}
                     required
-                  />
-                </div>
-
-                <div style={{ marginTop: "14px" }}>
-                  <label
-                    htmlFor="payout-bank-name"
-                    style={{
-                      display: "block",
-                      marginBottom: "6px",
-                      fontWeight: "600",
-                    }}
                   >
-                    Bank name
-                  </label>
+                    <option value="">
+                      {loadingBanks
+                        ? "Loading banks..."
+                        : "Select your bank"}
+                    </option>
 
-                  <input
-                    id="payout-bank-name"
-                    type="text"
-                    value={payoutBankName}
-                    onChange={(e) =>
-                      setPayoutBankName(e.target.value)
-                    }
-                    placeholder="e.g. Access Bank"
-                    style={{
-                      width: "100%",
-                      padding: "12px",
-                      border: "1px solid #ccc",
-                      borderRadius: "8px",
-                    }}
-                    required
-                  />
-                </div>
-
-                <div style={{ marginTop: "14px" }}>
-                  <label
-                    htmlFor="payout-bank-code"
-                    style={{
-                      display: "block",
-                      marginBottom: "6px",
-                      fontWeight: "600",
-                    }}
-                  >
-                    Bank code
-                  </label>
-
-                  <input
-                    id="payout-bank-code"
-                    type="text"
-                    value={payoutBankCode}
-                    onChange={(e) =>
-                      setPayoutBankCode(e.target.value)
-                    }
-                    placeholder="Enter bank code"
-                    style={{
-                      width: "100%",
-                      padding: "12px",
-                      border: "1px solid #ccc",
-                      borderRadius: "8px",
-                    }}
-                    required
-                  />
+                    {payoutBanks.map((bank) => (
+                      <option
+                        key={bank.code}
+                        value={bank.code}
+                      >
+                        {bank.name}
+                      </option>
+                    ))}
+                  </select>
                 </div>
 
                 <div style={{ marginTop: "14px" }}>
@@ -1435,11 +1681,13 @@ export default function RiderDashboard({ user, onBack }) {
                     inputMode="numeric"
                     maxLength="10"
                     value={payoutAccountNumber}
-                    onChange={(e) =>
+                    onChange={(e) => {
                       setPayoutAccountNumber(
                         e.target.value.replace(/\D/g, "")
-                      )
-                    }
+                      );
+
+                      setPayoutAccountName("");
+                    }}
                     placeholder="10-digit account number"
                     style={{
                       width: "100%",
@@ -1452,8 +1700,56 @@ export default function RiderDashboard({ user, onBack }) {
                 </div>
 
                 <button
+                  type="button"
+                  onClick={verifyPayoutAccount}
+                  disabled={
+                    verifyingPayout ||
+                    loadingBanks ||
+                    !selectedPayoutBank ||
+                    payoutAccountNumber.length !== 10
+                  }
+                  style={{
+                    marginTop: "16px",
+                    padding: "12px 18px",
+                  }}
+                >
+                  {verifyingPayout
+                    ? "Verifying..."
+                    : "Verify Account"}
+                </button>
+
+                {payoutAccountName && (
+                  <div
+                    style={{
+                      marginTop: "16px",
+                      padding: "12px",
+                      borderRadius: "8px",
+                      background: "#f5f5f5",
+                    }}
+                  >
+                    <p>
+                      <strong>Account name:</strong>{" "}
+                      {payoutAccountName}
+                    </p>
+
+                    <p
+                      style={{
+                        marginTop: "6px",
+                        color: "green",
+                      }}
+                    >
+                      ✓ Account verified
+                    </p>
+                  </div>
+                )}
+
+                <button
                   type="submit"
-                  disabled={savingPayout}
+                  disabled={
+                    savingPayout ||
+                    !payoutAccountName ||
+                    verifyingPayout
+                  }
                   style={{
                     marginTop: "20px",
                     padding: "12px 18px",
@@ -1462,9 +1758,41 @@ export default function RiderDashboard({ user, onBack }) {
                   {savingPayout
                     ? "Saving..."
                     : payoutAccount
-                    ? "Update Payout Account"
+                    ? "Save Updated Account"
                     : "Save Payout Account"}
                 </button>
+
+                {payoutEditing && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPayoutEditing(false);
+                      setPayoutAccountName(
+                        payoutAccount?.account_name || ""
+                      );
+                      setPayoutBankName(
+                        payoutAccount?.bank_name || ""
+                      );
+                      setPayoutBankCode(
+                        payoutAccount?.bank_code || ""
+                      );
+                      setSelectedPayoutBank(
+                        payoutAccount?.bank_code || ""
+                      );
+                      setPayoutAccountNumber(
+                        payoutAccount?.account_number || ""
+                      );
+                      setMessage("");
+                    }}
+                    style={{
+                      marginTop: "10px",
+                      marginLeft: "8px",
+                      padding: "12px 18px",
+                    }}
+                  >
+                    Cancel
+                  </button>
+                )}
               </form>
 
               <p
@@ -1474,16 +1802,128 @@ export default function RiderDashboard({ user, onBack }) {
                   opacity: 0.7,
                 }}
               >
-                Your verification status and Paystack recipient
-                details are managed by UniAbuja Market.
+                Select your bank and enter your 10-digit account
+                number. Paystack will verify the account and
+                return the account name automatically.
               </p>
             </>
           )}
         </div>
 
+        {/* AVAILABLE DELIVERIES */}
         <div
           className="dashboard-header"
-          style={{ marginTop: "24px" }}
+          style={{ marginTop: "32px" }}
+        >
+          <h2>Available Deliveries</h2>
+
+          <p>
+            Paid delivery orders available for riders in your
+            approved delivery areas.
+          </p>
+        </div>
+
+        {availableDeliveriesLoading ? (
+          <div className="dashboard-card">
+            <p>Checking for available deliveries...</p>
+          </div>
+        ) : availableDeliveries.length === 0 ? (
+          <div className="dashboard-card">
+            <div style={{ fontSize: "30px" }}>🔎</div>
+
+            <h3>No available deliveries</h3>
+
+            <p>
+              New paid rider deliveries that match your approved
+              delivery areas will appear here automatically.
+            </p>
+          </div>
+        ) : (
+          <div className="dashboard-grid">
+            {availableDeliveries.map((delivery) => (
+              <div
+                key={delivery.delivery_id}
+                className="dashboard-card"
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    gap: "12px",
+                  }}
+                >
+                  <div>
+                    <span style={{ fontSize: "24px" }}>
+                      📦
+                    </span>
+
+                    <h3>
+                      Delivery #
+                      {String(delivery.delivery_id).slice(0, 8)}
+                    </h3>
+                  </div>
+
+                  <span className="order-status status-pending">
+                    Available
+                  </span>
+                </div>
+
+                <p style={{ marginTop: "12px" }}>
+                  <strong>Delivery fee:</strong>{" "}
+                  {formatNaira(delivery.delivery_fee)}
+                </p>
+
+                {delivery.delivery_address && (
+                  <p style={{ marginTop: "8px" }}>
+                    <strong>Address:</strong>{" "}
+                    {delivery.delivery_address}
+                  </p>
+                )}
+
+                {delivery.customer_phone && (
+                  <p style={{ marginTop: "8px" }}>
+                    <strong>Customer phone:</strong>{" "}
+                    {delivery.customer_phone}
+                  </p>
+                )}
+
+                <p style={{ marginTop: "8px", opacity: 0.75 }}>
+                  Posted:{" "}
+                  {delivery.created_at
+                    ? new Date(
+                        delivery.created_at
+                      ).toLocaleString()
+                    : "Recently"}
+                </p>
+
+                <button
+                  type="button"
+                  onClick={() =>
+                    claimDelivery(delivery.delivery_id)
+                  }
+                  disabled={
+                    claimingDelivery === delivery.delivery_id
+                  }
+                  style={{
+                    marginTop: "16px",
+                    padding: "12px 18px",
+                    width: "100%",
+                  }}
+                >
+                  {claimingDelivery === delivery.delivery_id
+                    ? "Claiming..."
+                    : "Claim Delivery"}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* ASSIGNED DELIVERIES */}
+        <div
+          className="dashboard-header"
+          style={{ marginTop: "32px" }}
         >
           <h2>My Deliveries</h2>
 
