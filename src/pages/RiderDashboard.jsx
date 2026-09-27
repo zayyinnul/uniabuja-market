@@ -689,7 +689,16 @@ export default function RiderDashboard({ user, onBack }) {
     ).trim();
 
     if (!/^\d{4}$/.test(code)) {
-      setMessage("Enter the 4-digit pickup PIN given to you by the vendor.");
+      setMessage(
+        "Enter the 4-digit pickup PIN given to you by the vendor."
+      );
+      return;
+    }
+
+    if (delivery.status !== "ready_for_pickup") {
+      setMessage(
+        "The vendor has not marked this delivery as ready for pickup yet."
+      );
       return;
     }
 
@@ -721,7 +730,9 @@ export default function RiderDashboard({ user, onBack }) {
       [delivery.id]: "",
     }));
 
-    setMessage("Pickup confirmed. You can now see the customer delivery details.");
+    setMessage(
+      "Pickup confirmed. You can now see the customer delivery details."
+    );
 
     setDeliveryAction(null);
 
@@ -2106,6 +2117,9 @@ export default function RiderDashboard({ user, onBack }) {
             {deliveries.map((delivery) => {
               const details = deliveryDetails[delivery.id];
 
+              const pickupPinReady =
+                delivery.status === "ready_for_pickup";
+
               return (
                 <div
                   key={delivery.id}
@@ -2143,8 +2157,9 @@ export default function RiderDashboard({ user, onBack }) {
                     {formatNaira(delivery.delivery_fee)}
                   </p>
 
-                  {/* READY FOR PICKUP */}
-                  {delivery.status === "ready_for_pickup" && (
+                  {/* VENDOR PICKUP INFORMATION + PICKUP PIN */}
+                  {(delivery.status === "assigned" ||
+                    delivery.status === "ready_for_pickup") && (
                     <div
                       style={{
                         marginTop: "16px",
@@ -2154,62 +2169,189 @@ export default function RiderDashboard({ user, onBack }) {
                       }}
                     >
                       <p>
-                        Go to the vendor's pickup location and
-                        collect the order.
+                        <strong>Vendor pickup details</strong>
                       </p>
 
                       <p style={{ marginTop: "8px" }}>
-                        <strong>
-                          Ask the vendor for the 4-digit pickup PIN.
-                        </strong>
+                        <strong>Store:</strong>{" "}
+                        {details?.pickup_store_name ||
+                          "Loading store..."}
                       </p>
 
-                      <input
-                        type="text"
-                        inputMode="numeric"
-                        maxLength="4"
-                        value={pickupCodes[delivery.id] || ""}
-                        onChange={(e) =>
-                          setPickupCodes((current) => ({
-                            ...current,
-                            [delivery.id]: e.target.value
-                              .replace(/\D/g, "")
-                              .slice(0, 4),
-                          }))
-                        }
-                        placeholder="Enter pickup PIN"
-                        style={{
-                          width: "100%",
-                          marginTop: "12px",
-                          padding: "12px",
-                          border: "1px solid #ccc",
-                          borderRadius: "8px",
-                          letterSpacing: "4px",
-                          textAlign: "center",
-                          fontSize: "18px",
-                        }}
-                      />
+                      <p style={{ marginTop: "8px" }}>
+                        <strong>Pickup address:</strong>{" "}
+                        {details?.pickup_location ||
+                          "Loading pickup address..."}
+                      </p>
 
-                      <button
-                        type="button"
-                        onClick={() =>
-                          confirmPickup(delivery)
-                        }
-                        disabled={
-                          deliveryAction ===
-                          `pickup-${delivery.id}`
-                        }
-                        style={{
-                          marginTop: "12px",
-                          padding: "12px 18px",
-                          width: "100%",
-                        }}
-                      >
-                        {deliveryAction ===
-                        `pickup-${delivery.id}`
-                          ? "Confirming..."
-                          : "Confirm Pickup"}
-                      </button>
+                      {delivery.status === "assigned" && (
+                        <>
+                          <p
+                            style={{
+                              marginTop: "10px",
+                              opacity: 0.8,
+                            }}
+                          >
+                            Your delivery has been assigned.
+                            Go to the vendor's pickup location.
+                          </p>
+
+                          <div
+                            style={{
+                              marginTop: "16px",
+                              padding: "12px",
+                              borderRadius: "8px",
+                              background: "#fff",
+                              border: "1px solid #ddd",
+                            }}
+                          >
+                            <p>
+                              <strong>Pickup PIN</strong>
+                            </p>
+
+                            <p
+                              style={{
+                                marginTop: "6px",
+                                fontSize: "13px",
+                                opacity: 0.75,
+                              }}
+                            >
+                              The vendor will give you the
+                              4-digit pickup PIN when the order
+                              is ready.
+                            </p>
+
+                            <input
+                              type="text"
+                              inputMode="numeric"
+                              maxLength="4"
+                              value={
+                                pickupCodes[delivery.id] || ""
+                              }
+                              onChange={(e) =>
+                                setPickupCodes((current) => ({
+                                  ...current,
+                                  [delivery.id]: e.target.value
+                                    .replace(/\D/g, "")
+                                    .slice(0, 4),
+                                }))
+                              }
+                              placeholder="Enter pickup PIN"
+                              style={{
+                                width: "100%",
+                                marginTop: "12px",
+                                padding: "12px",
+                                border: "1px solid #ccc",
+                                borderRadius: "8px",
+                                letterSpacing: "4px",
+                                textAlign: "center",
+                                fontSize: "18px",
+                              }}
+                            />
+
+                            <button
+                              type="button"
+                              onClick={() =>
+                                confirmPickup(delivery)
+                              }
+                              disabled={
+                                !pickupPinReady ||
+                                deliveryAction ===
+                                  `pickup-${delivery.id}`
+                              }
+                              style={{
+                                marginTop: "12px",
+                                padding: "12px 18px",
+                                width: "100%",
+                              }}
+                            >
+                              {deliveryAction ===
+                              `pickup-${delivery.id}`
+                                ? "Confirming..."
+                                : "Confirm Pickup"}
+                            </button>
+
+                            {!pickupPinReady && (
+                              <p
+                                style={{
+                                  marginTop: "8px",
+                                  fontSize: "12px",
+                                  opacity: 0.7,
+                                  textAlign: "center",
+                                }}
+                              >
+                                Waiting for the vendor to mark
+                                the order ready for pickup.
+                              </p>
+                            )}
+                          </div>
+                        </>
+                      )}
+
+                      {delivery.status === "ready_for_pickup" && (
+                        <>
+                          <p style={{ marginTop: "10px" }}>
+                            The order is ready. Go to the vendor's
+                            pickup location and collect it.
+                          </p>
+
+                          <p style={{ marginTop: "8px" }}>
+                            <strong>
+                              Ask the vendor for the 4-digit
+                              pickup PIN.
+                            </strong>
+                          </p>
+
+                          <input
+                            type="text"
+                            inputMode="numeric"
+                            maxLength="4"
+                            value={
+                              pickupCodes[delivery.id] || ""
+                            }
+                            onChange={(e) =>
+                              setPickupCodes((current) => ({
+                                ...current,
+                                [delivery.id]: e.target.value
+                                  .replace(/\D/g, "")
+                                  .slice(0, 4),
+                              }))
+                            }
+                            placeholder="Enter pickup PIN"
+                            style={{
+                              width: "100%",
+                              marginTop: "12px",
+                              padding: "12px",
+                              border: "1px solid #ccc",
+                              borderRadius: "8px",
+                              letterSpacing: "4px",
+                              textAlign: "center",
+                              fontSize: "18px",
+                            }}
+                          />
+
+                          <button
+                            type="button"
+                            onClick={() =>
+                              confirmPickup(delivery)
+                            }
+                            disabled={
+                              deliveryAction ===
+                              `pickup-${delivery.id}`
+                            }
+                            style={{
+                              marginTop: "12px",
+                              padding: "12px 18px",
+                              width: "100%",
+                            }}
+                          >
+                            {deliveryAction ===
+                            `pickup-${delivery.id}`
+                              ? "Confirming..."
+                              : "Confirm Pickup"}
+                          </button>
+                        </>
+                      )}
                     </div>
                   )}
 

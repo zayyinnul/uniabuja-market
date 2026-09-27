@@ -72,6 +72,7 @@ function VendorOrders({ user, onBack }) {
               status,
               rider_request_status,
               zone_id,
+              pickup_code,
               created_at,
               updated_at
             `)
@@ -104,6 +105,7 @@ function VendorOrders({ user, onBack }) {
       ;(data || []).forEach((item) => {
         if (!groupedOrders[item.order_id]) {
           const vendorOrder = statusMap[item.order_id]
+
           const delivery = vendorOrder
             ? deliveryMap[vendorOrder.id] || null
             : null
@@ -241,21 +243,14 @@ function VendorOrders({ user, onBack }) {
         throw new Error(error.message)
       }
 
-      setOrders((currentOrders) =>
-        currentOrders.map((currentOrder) =>
-          currentOrder.order_id === order.order_id
-            ? {
-                ...currentOrder,
-                delivery: {
-                  ...currentOrder.delivery,
-                  rider_id: rider.rider_id,
-                  rider_request_status: 'assigned',
-                  status: 'assigned',
-                },
-              }
-            : currentOrder
-        )
-      )
+      /*
+       * Reload the complete vendor order after assignment.
+       *
+       * This ensures the latest rider_id, pickup_code,
+       * delivery status and other delivery fields are
+       * pulled directly from Supabase.
+       */
+      await loadVendorOrders()
 
       setAvailableRiders((current) => {
         const updated = { ...current }
@@ -603,9 +598,25 @@ function VendorOrders({ user, onBack }) {
       return null
     }
 
+    /*
+     * RIDER ASSIGNED
+     *
+     * Important:
+     * Do NOT depend on delivery_method === 'rider'.
+     *
+     * The vendor can start with a vendor delivery record
+     * and later assign a UniAbuja Market rider.
+     *
+     * rider_id is the reliable indicator that a rider
+     * has been assigned.
+     */
     if (
       delivery.rider_id &&
-      delivery.status === 'assigned'
+      (
+        delivery.status === 'assigned' ||
+        delivery.status === 'ready_for_pickup' ||
+        delivery.status === 'picked_up'
+      )
     ) {
       return (
         <div
@@ -613,7 +624,7 @@ function VendorOrders({ user, onBack }) {
             background: '#ecfdf5',
             border: '1px solid #10b981',
             borderRadius: '10px',
-            padding: '12px 14px',
+            padding: '14px',
             marginTop: '12px',
             color: '#065f46',
           }}
@@ -622,49 +633,90 @@ function VendorOrders({ user, onBack }) {
 
           <p
             style={{
-              margin: '5px 0 0',
+              margin: '6px 0 10px',
             }}
           >
-            A rider has been assigned to this
-            delivery. You can continue processing
-            the order.
+            Give this pickup PIN to the rider when
+            they arrive to collect the order.
           </p>
-        </div>
-      )
-    }
 
-    if (
-      delivery.rider_request_status === 'assigned' &&
-      delivery.rider_id
-    ) {
-      return (
-        <div
-          style={{
-            background: '#ecfdf5',
-            border: '1px solid #10b981',
-            borderRadius: '10px',
-            padding: '12px 14px',
-            marginTop: '12px',
-            color: '#065f46',
-          }}
-        >
-          <strong>🛵 RIDER ASSIGNED</strong>
+          {delivery.pickup_code ? (
+            <div
+              style={{
+                background: '#ffffff',
+                border: '2px dashed #10b981',
+                borderRadius: '10px',
+                padding: '12px',
+                textAlign: 'center',
+              }}
+            >
+              <div
+                style={{
+                  fontSize: '12px',
+                  fontWeight: '700',
+                  letterSpacing: '1px',
+                  marginBottom: '5px',
+                }}
+              >
+                PICKUP PIN
+              </div>
+
+              <div
+                style={{
+                  fontSize: '28px',
+                  fontWeight: '800',
+                  letterSpacing: '8px',
+                }}
+              >
+                {delivery.pickup_code}
+              </div>
+            </div>
+          ) : (
+            <div
+              style={{
+                background: '#fff7ed',
+                border: '1px solid #f97316',
+                borderRadius: '8px',
+                padding: '10px',
+                color: '#9a3412',
+              }}
+            >
+              <strong>
+                Pickup PIN is not available yet.
+              </strong>
+
+              <p
+                style={{
+                  margin: '5px 0 0',
+                  fontSize: '13px',
+                }}
+              >
+                The delivery record does not currently
+                contain a pickup PIN.
+              </p>
+            </div>
+          )}
 
           <p
             style={{
-              margin: '5px 0 0',
+              margin: '10px 0 0',
+              fontSize: '13px',
             }}
           >
-            A rider has been assigned to this
-            delivery. You can continue processing
-            the order.
+            The rider will enter this PIN after
+            collecting the order from you.
           </p>
         </div>
       )
     }
 
+    /*
+     * VENDOR DELIVERY / FIND RIDER
+     *
+     * Vendor can deliver themselves or request/select
+     * an available UniAbuja Market rider.
+     */
     if (
-      delivery.delivery_method === 'vendor' &&
       delivery.status === 'pending' &&
       order.payment_status === 'paid'
     ) {
@@ -1151,37 +1203,37 @@ function VendorOrders({ user, onBack }) {
 
                   {nextStatus &&
                     nextStatus !== 'delivered' && (
-                      <button
-                        type="button"
-                        className="primary-btn"
-                        disabled={
-                          updatingOrder ===
-                          order.order_id
-                        }
-                        onClick={() =>
-                          updateStatus(order)
-                        }
-                      >
-                        {updatingOrder ===
+                    <button
+                      type="button"
+                      className="primary-btn"
+                      disabled={
+                        updatingOrder ===
                         order.order_id
-                          ? 'Updating...'
-                          : `Mark as ${formatStatus(
-                              nextStatus
-                            )}`}
-                      </button>
-                    )}
+                      }
+                      onClick={() =>
+                        updateStatus(order)
+                      }
+                    >
+                      {updatingOrder ===
+                      order.order_id
+                        ? 'Updating...'
+                        : `Mark as ${formatStatus(
+                            nextStatus
+                          )}`}
+                    </button>
+                  )}
 
                   {order.order_status !== 'cancelled' &&
                     order.vendor_order_id && (
-                      <OrderChat
-                        user={user}
-                        orderId={order.order_id}
-                        title={`Chat about order #${order.order_id.slice(
-                          0,
-                          8
-                        )}`}
-                      />
-                    )}
+                    <OrderChat
+                      user={user}
+                      orderId={order.order_id}
+                      title={`Chat about order #${order.order_id.slice(
+                        0,
+                        8
+                      )}`}
+                    />
+                  )}
 
                   {order.order_status ===
                     'delivered' && (
