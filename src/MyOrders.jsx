@@ -105,6 +105,24 @@ function MyOrders({ user, onBack }) {
         statusMap[item.order_id] = item.status
       })
 
+      /*
+       * Load delivery codes through the customer-only RPC.
+       * The RPC only returns deliveries belonging to the
+       * currently logged-in customer.
+       */
+      const { data: deliveryCodes, error: deliveryCodesError } =
+        await supabase.rpc('get_my_delivery_codes')
+
+      if (deliveryCodesError) {
+        throw new Error(deliveryCodesError.message)
+      }
+
+      const deliveryMap = {}
+
+      ;(deliveryCodes || []).forEach((delivery) => {
+        deliveryMap[delivery.order_id] = delivery
+      })
+
       const productsMap = {}
 
       products.forEach((product) => {
@@ -124,14 +142,21 @@ function MyOrders({ user, onBack }) {
         })
       })
 
-      const completeOrders = orderData.map((order) => ({
-        ...order,
-        status:
-          statusMap[order.id] ||
-          order.status ||
-          'pending',
-        items: itemsMap[order.id] || [],
-      }))
+      const completeOrders = orderData.map((order) => {
+        const delivery = deliveryMap[order.id]
+
+        return {
+          ...order,
+          status:
+            statusMap[order.id] ||
+            order.status ||
+            'pending',
+          items: itemsMap[order.id] || [],
+          delivery_code: delivery?.delivery_code || null,
+          delivery_status: delivery?.delivery_status || null,
+          vendor_order_id: delivery?.vendor_order_id || null,
+        }
+      })
 
       setOrders(completeOrders)
     } catch (error) {
@@ -410,6 +435,10 @@ function MyOrders({ user, onBack }) {
                 order.payment_status !== 'cancelled' &&
                 order.status === 'pending'
 
+              const showDeliveryCode =
+                order.status === 'out_for_delivery' &&
+                order.delivery_code
+
               return (
                 <div
                   className="order-card"
@@ -560,6 +589,56 @@ function MyOrders({ user, onBack }) {
                         </div>
                       )}
                   </div>
+
+                  {/* Delivery PIN */}
+                  {showDeliveryCode && (
+                    <div
+                      style={{
+                        margin: '14px 0',
+                        padding: '18px',
+                        background: '#eff6ff',
+                        border: '2px solid #3b82f6',
+                        borderRadius: '12px',
+                        textAlign: 'center',
+                      }}
+                    >
+                      <div
+                        style={{
+                          fontSize: '14px',
+                          fontWeight: '700',
+                          color: '#1e40af',
+                          marginBottom: '8px',
+                        }}
+                      >
+                        🔐 YOUR DELIVERY PIN
+                      </div>
+
+                      <div
+                        style={{
+                          fontSize: '32px',
+                          fontWeight: '800',
+                          letterSpacing: '8px',
+                          color: '#111827',
+                          margin: '6px 0 10px',
+                        }}
+                      >
+                        {order.delivery_code}
+                      </div>
+
+                      <p
+                        style={{
+                          margin: 0,
+                          color: '#374151',
+                          lineHeight: '1.5',
+                        }}
+                      >
+                        Give this 4-digit PIN to the
+                        vendor or rider when your order
+                        arrives. They will enter it to
+                        confirm your delivery.
+                      </p>
+                    </div>
+                  )}
 
                   {/* Delivery progress */}
                   <div

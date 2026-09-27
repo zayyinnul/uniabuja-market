@@ -10,6 +10,7 @@ function VendorOrders({ user, onBack }) {
   const [findingRiders, setFindingRiders] = useState(null)
   const [assigningRider, setAssigningRider] = useState(null)
   const [availableRiders, setAvailableRiders] = useState({})
+  const [deliveryCodes, setDeliveryCodes] = useState({})
 
   useEffect(() => {
     loadVendorOrders()
@@ -310,10 +311,97 @@ function VendorOrders({ user, onBack }) {
 
     const nextStatus = statusFlow[currentIndex + 1]
 
+    if (nextStatus === 'delivered') {
+      setMessage(
+        'Enter the customer delivery code to complete this delivery.'
+      )
+      return
+    }
+
     setUpdatingOrder(order.order_id)
     setMessage('')
 
     try {
+      /*
+       * READY → OUT FOR DELIVERY
+       *
+       * Delivery status is handled by the delivery RPC.
+       * This prevents the vendor from bypassing the
+       * delivery workflow.
+       */
+      if (nextStatus === 'out_for_delivery') {
+        if (!order.delivery?.id) {
+          throw new Error(
+            'Delivery record not found for this order.'
+          )
+        }
+
+        if (order.payment_status !== 'paid') {
+          throw new Error(
+            'Payment must be confirmed before delivery can start.'
+          )
+        }
+
+        const { error: deliveryError } =
+          await supabase.rpc(
+            'mark_delivery_out_for_delivery',
+            {
+              p_delivery_id: order.delivery.id,
+            }
+          )
+
+        if (deliveryError) {
+          console.error(
+            'Start delivery error:',
+            deliveryError
+          )
+          throw new Error(deliveryError.message)
+        }
+
+        const { error: orderError } =
+          await supabase
+            .from('vendor_orders')
+            .update({
+              status: 'out_for_delivery',
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', order.vendor_order_id)
+            .eq('vendor_id', user.id)
+
+        if (orderError) {
+          console.error(
+            'Vendor order delivery status error:',
+            orderError
+          )
+          throw new Error(orderError.message)
+        }
+
+        setOrders((currentOrders) =>
+          currentOrders.map((currentOrder) =>
+            currentOrder.order_id === order.order_id
+              ? {
+                  ...currentOrder,
+                  order_status: 'out_for_delivery',
+                  delivery: {
+                    ...currentOrder.delivery,
+                    status: 'out_for_delivery',
+                  },
+                }
+              : currentOrder
+          )
+        )
+
+        setMessage(
+          'Order is now out for delivery.'
+        )
+
+        return
+      }
+
+      /*
+       * All earlier vendor-order statuses:
+       * pending → accepted → processing → ready
+       */
       const { error } = await supabase
         .from('vendor_orders')
         .update({
@@ -359,9 +447,106 @@ function VendorOrders({ user, onBack }) {
         error.message ||
           'Could not update the order status.'
       )
+    } finally {
+      setUpdatingOrder(null)
+    }
+  }
+
+  const confirmDelivered = async (order) => {
+    if (!order.delivery?.id) {
+      setMessage(
+        'Delivery record not found for this order.'
+      )
+      return
     }
 
-    setUpdatingOrder(null)
+    const code =
+      deliveryCodes[order.order_id] || ''
+
+    if (!/^\d{4}$/.test(code)) {
+      setMessage(
+        'Enter the 4-digit delivery code given by the customer.'
+      )
+      return
+    }
+
+    setUpdatingOrder(order.order_id)
+    setMessage('')
+
+    try {
+      const { error } = await supabase.rpc(
+        'confirm_delivery_delivery',
+        {
+          p_delivery_id: order.delivery.id,
+          p_delivery_code: code,
+        }
+      )
+
+      if (error) {
+        console.error(
+          'Confirm delivery error:',
+          error
+        )
+        throw new Error(error.message)
+      }
+
+      if (order.vendor_order_id) {
+        const { error: orderError } =
+          await supabase
+            .from('vendor_orders')
+            .update({
+              status: 'delivered',
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', order.vendor_order_id)
+            .eq('vendor_id', user.id)
+
+        if (orderError) {
+          console.error(
+            'Vendor delivered status error:',
+            orderError
+          )
+          throw new Error(orderError.message)
+        }
+      }
+
+      setOrders((currentOrders) =>
+        currentOrders.map((currentOrder) =>
+          currentOrder.order_id === order.order_id
+            ? {
+                ...currentOrder,
+                order_status: 'delivered',
+                delivery: {
+                  ...currentOrder.delivery,
+                  status: 'delivered',
+                },
+              }
+            : currentOrder
+        )
+      )
+
+      setDeliveryCodes((currentCodes) => {
+        const updated = { ...currentCodes }
+        delete updated[order.order_id]
+        return updated
+      })
+
+      setMessage(
+        'Delivery confirmed successfully. Order completed.'
+      )
+    } catch (error) {
+      console.error(
+        'Confirm delivered error:',
+        error
+      )
+
+      setMessage(
+        error.message ||
+          'Could not confirm delivery.'
+      )
+    } finally {
+      setUpdatingOrder(null)
+    }
   }
 
   const formatDate = (date) => {
@@ -881,26 +1066,110 @@ function VendorOrders({ user, onBack }) {
 
                   {getDeliveryAction(order)}
 
-                  {nextStatus && (
-                    <button
-                      type="button"
-                      className="primary-btn"
-                      disabled={
-                        updatingOrder ===
-                        order.order_id
-                      }
-                      onClick={() =>
-                        updateStatus(order)
-                      }
+                  {order.order_status ===
+                    'out_for_delivery' && (
+                    <div
+                      style={{
+                        background: '#fff7ed',
+                        border: '1px solid #f97316',
+                        borderRadius: '10px',
+                        padding: '14px',
+                        marginTop: '12px',
+                      }}
                     >
-                      {updatingOrder ===
-                      order.order_id
-                        ? 'Updating...'
-                        : `Mark as ${formatStatus(
-                            nextStatus
-                          )}`}
-                    </button>
+                      <strong>
+                        📦 COMPLETE DELIVERY
+                      </strong>
+
+                      <p
+                        style={{
+                          margin: '6px 0 10px',
+                        }}
+                      >
+                        Ask the customer for their
+                        4-digit delivery code, then
+                        enter it below to complete
+                        the order.
+                      </p>
+
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        maxLength={4}
+                        placeholder="Enter 4-digit code"
+                        value={
+                          deliveryCodes[
+                            order.order_id
+                          ] || ''
+                        }
+                        onChange={(event) => {
+                          const value =
+                            event.target.value
+                              .replace(/\D/g, '')
+                              .slice(0, 4)
+
+                          setDeliveryCodes(
+                            (currentCodes) => ({
+                              ...currentCodes,
+                              [order.order_id]:
+                                value,
+                            })
+                          )
+                        }}
+                        style={{
+                          width: '100%',
+                          boxSizing: 'border-box',
+                          padding: '12px',
+                          border:
+                            '1px solid #cbd5e1',
+                          borderRadius: '8px',
+                          fontSize: '18px',
+                          letterSpacing: '4px',
+                          textAlign: 'center',
+                          marginBottom: '10px',
+                        }}
+                      />
+
+                      <button
+                        type="button"
+                        className="primary-btn"
+                        disabled={
+                          updatingOrder ===
+                          order.order_id
+                        }
+                        onClick={() =>
+                          confirmDelivered(order)
+                        }
+                      >
+                        {updatingOrder ===
+                        order.order_id
+                          ? 'Confirming...'
+                          : 'Confirm Delivery'}
+                      </button>
+                    </div>
                   )}
+
+                  {nextStatus &&
+                    nextStatus !== 'delivered' && (
+                      <button
+                        type="button"
+                        className="primary-btn"
+                        disabled={
+                          updatingOrder ===
+                          order.order_id
+                        }
+                        onClick={() =>
+                          updateStatus(order)
+                        }
+                      >
+                        {updatingOrder ===
+                        order.order_id
+                          ? 'Updating...'
+                          : `Mark as ${formatStatus(
+                              nextStatus
+                            )}`}
+                      </button>
+                    )}
 
                   {order.order_status !== 'cancelled' &&
                     order.vendor_order_id && (

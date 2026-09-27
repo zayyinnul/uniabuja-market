@@ -42,6 +42,12 @@ export default function RiderDashboard({ user, onBack }) {
     useState(false);
   const [claimingDelivery, setClaimingDelivery] = useState(null);
 
+  // Rider delivery actions
+  const [pickupCodes, setPickupCodes] = useState({});
+  const [deliveryCodes, setDeliveryCodes] = useState({});
+  const [deliveryDetails, setDeliveryDetails] = useState({});
+  const [deliveryAction, setDeliveryAction] = useState(null);
+
   // Payout account
   const [payoutAccount, setPayoutAccount] = useState(null);
   const [payoutLoading, setPayoutLoading] = useState(false);
@@ -68,9 +74,6 @@ export default function RiderDashboard({ user, onBack }) {
     }
   }, [user]);
 
-  // Keep available deliveries reasonably fresh while the rider dashboard
-  // is open. This does not assign anything automatically; it simply refreshes
-  // the list of deliveries that this rider is eligible to claim.
   useEffect(() => {
     if (!user || !isRider) {
       return;
@@ -344,10 +347,7 @@ export default function RiderDashboard({ user, onBack }) {
   }
 
   async function verifyPayoutAccount() {
-    const accountNumber = payoutAccountNumber.replace(
-      /\s/g,
-      ""
-    );
+    const accountNumber = payoutAccountNumber.replace(/\s/g, "");
 
     if (!selectedPayoutBank) {
       setMessage("Please select your bank.");
@@ -425,10 +425,7 @@ export default function RiderDashboard({ user, onBack }) {
     e.preventDefault();
 
     const accountName = payoutAccountName.trim();
-    const accountNumber = payoutAccountNumber.replace(
-      /\s/g,
-      ""
-    );
+    const accountNumber = payoutAccountNumber.replace(/\s/g, "");
 
     const selectedBank = payoutBanks.find(
       (bank) =>
@@ -566,8 +563,6 @@ export default function RiderDashboard({ user, onBack }) {
         delivery_method,
         delivery_fee,
         status,
-        pickup_code,
-        delivery_code,
         picked_up_at,
         delivered_at,
         created_at,
@@ -583,7 +578,47 @@ export default function RiderDashboard({ user, onBack }) {
       return;
     }
 
-    setDeliveries(data || []);
+    const assignedDeliveries = data || [];
+
+    const detailResults = await Promise.all(
+      assignedDeliveries.map(async (delivery) => {
+        const { data: detail, error: detailError } =
+          await supabase.rpc(
+            "get_rider_delivery_details",
+            {
+              p_delivery_id: delivery.id,
+            }
+          );
+
+        if (detailError) {
+          console.error(
+            "Delivery details error:",
+            delivery.id,
+            detailError
+          );
+
+          return null;
+        }
+
+        return {
+          deliveryId: delivery.id,
+          detail: Array.isArray(detail)
+            ? detail[0] || null
+            : detail || null,
+        };
+      })
+    );
+
+    const detailsMap = {};
+
+    detailResults.forEach((result) => {
+      if (result?.deliveryId && result?.detail) {
+        detailsMap[result.deliveryId] = result.detail;
+      }
+    });
+
+    setDeliveryDetails(detailsMap);
+    setDeliveries(assignedDeliveries);
     setDeliveriesLoading(false);
   }
 
@@ -645,6 +680,130 @@ export default function RiderDashboard({ user, onBack }) {
     setClaimingDelivery(null);
 
     await loadAvailableDeliveries();
+    await loadAssignedDeliveries();
+  }
+
+  async function confirmPickup(delivery) {
+    const code = String(
+      pickupCodes[delivery.id] || ""
+    ).trim();
+
+    if (!/^\d{4}$/.test(code)) {
+      setMessage("Enter the 4-digit pickup PIN given to you by the vendor.");
+      return;
+    }
+
+    setDeliveryAction(`pickup-${delivery.id}`);
+    setMessage("");
+
+    const { error } = await supabase.rpc(
+      "confirm_delivery_pickup",
+      {
+        p_delivery_id: delivery.id,
+        p_pickup_code: code,
+      }
+    );
+
+    if (error) {
+      console.error("Confirm pickup error:", error);
+
+      setMessage(
+        error?.message ||
+          "The pickup PIN is incorrect or the delivery cannot be picked up yet."
+      );
+
+      setDeliveryAction(null);
+      return;
+    }
+
+    setPickupCodes((current) => ({
+      ...current,
+      [delivery.id]: "",
+    }));
+
+    setMessage("Pickup confirmed. You can now see the customer delivery details.");
+
+    setDeliveryAction(null);
+
+    await loadAssignedDeliveries();
+  }
+
+  async function startDelivery(delivery) {
+    setDeliveryAction(`start-${delivery.id}`);
+    setMessage("");
+
+    const { error } = await supabase.rpc(
+      "start_delivery",
+      {
+        p_delivery_id: delivery.id,
+      }
+    );
+
+    if (error) {
+      console.error("Start delivery error:", error);
+
+      setMessage(
+        error?.message ||
+          "Unable to start this delivery."
+      );
+
+      setDeliveryAction(null);
+      return;
+    }
+
+    setMessage(
+      "Delivery started. The customer can now see their delivery PIN."
+    );
+
+    setDeliveryAction(null);
+
+    await loadAssignedDeliveries();
+  }
+
+  async function confirmDelivery(delivery) {
+    const code = String(
+      deliveryCodes[delivery.id] || ""
+    ).trim();
+
+    if (!/^\d{4}$/.test(code)) {
+      setMessage(
+        "Enter the 4-digit delivery PIN provided by the customer."
+      );
+      return;
+    }
+
+    setDeliveryAction(`delivery-${delivery.id}`);
+    setMessage("");
+
+    const { error } = await supabase.rpc(
+      "confirm_delivery_delivery",
+      {
+        p_delivery_id: delivery.id,
+        p_delivery_code: code,
+      }
+    );
+
+    if (error) {
+      console.error("Confirm delivery error:", error);
+
+      setMessage(
+        error?.message ||
+          "The delivery PIN is incorrect or this delivery cannot be completed yet."
+      );
+
+      setDeliveryAction(null);
+      return;
+    }
+
+    setDeliveryCodes((current) => ({
+      ...current,
+      [delivery.id]: "",
+    }));
+
+    setMessage("Delivery completed successfully.");
+
+    setDeliveryAction(null);
+
     await loadAssignedDeliveries();
   }
 
@@ -1870,23 +2029,21 @@ export default function RiderDashboard({ user, onBack }) {
                 </div>
 
                 <p style={{ marginTop: "12px" }}>
+                  <strong>Pickup location:</strong>{" "}
+                  {delivery.pickup_store_name ||
+                    "Vendor store"}
+                </p>
+
+                <p style={{ marginTop: "8px" }}>
+                  <strong>Address:</strong>{" "}
+                  {delivery.pickup_location ||
+                    "Pickup location not provided"}
+                </p>
+
+                <p style={{ marginTop: "8px" }}>
                   <strong>Delivery fee:</strong>{" "}
                   {formatNaira(delivery.delivery_fee)}
                 </p>
-
-                {delivery.delivery_address && (
-                  <p style={{ marginTop: "8px" }}>
-                    <strong>Address:</strong>{" "}
-                    {delivery.delivery_address}
-                  </p>
-                )}
-
-                {delivery.customer_phone && (
-                  <p style={{ marginTop: "8px" }}>
-                    <strong>Customer phone:</strong>{" "}
-                    {delivery.customer_phone}
-                  </p>
-                )}
 
                 <p style={{ marginTop: "8px", opacity: 0.75 }}>
                   Posted:{" "}
@@ -1946,73 +2103,297 @@ export default function RiderDashboard({ user, onBack }) {
           </div>
         ) : (
           <div className="dashboard-grid">
-            {deliveries.map((delivery) => (
-              <div
-                key={delivery.id}
-                className="dashboard-card"
-              >
-                <div
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                    gap: "12px",
-                  }}
-                >
-                  <div>
-                    <span style={{ fontSize: "24px" }}>
-                      🚴
-                    </span>
+            {deliveries.map((delivery) => {
+              const details = deliveryDetails[delivery.id];
 
-                    <h3>
-                      Delivery #{delivery.id.slice(0, 8)}
-                    </h3>
+              return (
+                <div
+                  key={delivery.id}
+                  className="dashboard-card"
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      gap: "12px",
+                    }}
+                  >
+                    <div>
+                      <span style={{ fontSize: "24px" }}>
+                        🚴
+                      </span>
+
+                      <h3>
+                        Delivery #{delivery.id.slice(0, 8)}
+                      </h3>
+                    </div>
+
+                    <span
+                      className={`order-status status-${delivery.status}`}
+                    >
+                      {formatDeliveryStatus(
+                        delivery.status
+                      )}
+                    </span>
                   </div>
 
-                  <span
-                    className={`order-status status-${delivery.status}`}
+                  <p style={{ marginTop: "12px" }}>
+                    <strong>Delivery fee:</strong>{" "}
+                    {formatNaira(delivery.delivery_fee)}
+                  </p>
+
+                  {/* READY FOR PICKUP */}
+                  {delivery.status === "ready_for_pickup" && (
+                    <div
+                      style={{
+                        marginTop: "16px",
+                        padding: "14px",
+                        borderRadius: "8px",
+                        background: "#f5f5f5",
+                      }}
+                    >
+                      <p>
+                        Go to the vendor's pickup location and
+                        collect the order.
+                      </p>
+
+                      <p style={{ marginTop: "8px" }}>
+                        <strong>
+                          Ask the vendor for the 4-digit pickup PIN.
+                        </strong>
+                      </p>
+
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        maxLength="4"
+                        value={pickupCodes[delivery.id] || ""}
+                        onChange={(e) =>
+                          setPickupCodes((current) => ({
+                            ...current,
+                            [delivery.id]: e.target.value
+                              .replace(/\D/g, "")
+                              .slice(0, 4),
+                          }))
+                        }
+                        placeholder="Enter pickup PIN"
+                        style={{
+                          width: "100%",
+                          marginTop: "12px",
+                          padding: "12px",
+                          border: "1px solid #ccc",
+                          borderRadius: "8px",
+                          letterSpacing: "4px",
+                          textAlign: "center",
+                          fontSize: "18px",
+                        }}
+                      />
+
+                      <button
+                        type="button"
+                        onClick={() =>
+                          confirmPickup(delivery)
+                        }
+                        disabled={
+                          deliveryAction ===
+                          `pickup-${delivery.id}`
+                        }
+                        style={{
+                          marginTop: "12px",
+                          padding: "12px 18px",
+                          width: "100%",
+                        }}
+                      >
+                        {deliveryAction ===
+                        `pickup-${delivery.id}`
+                          ? "Confirming..."
+                          : "Confirm Pickup"}
+                      </button>
+                    </div>
+                  )}
+
+                  {/* PICKED UP */}
+                  {delivery.status === "picked_up" && (
+                    <div
+                      style={{
+                        marginTop: "16px",
+                        padding: "14px",
+                        borderRadius: "8px",
+                        background: "#f5f5f5",
+                      }}
+                    >
+                      <p>
+                        <strong>Customer delivery details</strong>
+                      </p>
+
+                      <p style={{ marginTop: "8px" }}>
+                        <strong>Address:</strong>{" "}
+                        {details?.delivery_address ||
+                          "Loading address..."}
+                      </p>
+
+                      <p style={{ marginTop: "8px" }}>
+                        <strong>Phone:</strong>{" "}
+                        {details?.customer_phone ||
+                          "Loading phone..."}
+                      </p>
+
+                      <button
+                        type="button"
+                        onClick={() =>
+                          startDelivery(delivery)
+                        }
+                        disabled={
+                          deliveryAction ===
+                          `start-${delivery.id}`
+                        }
+                        style={{
+                          marginTop: "14px",
+                          padding: "12px 18px",
+                          width: "100%",
+                        }}
+                      >
+                        {deliveryAction ===
+                        `start-${delivery.id}`
+                          ? "Starting..."
+                          : "Start Delivery"}
+                      </button>
+                    </div>
+                  )}
+
+                  {/* OUT FOR DELIVERY */}
+                  {delivery.status === "out_for_delivery" && (
+                    <div
+                      style={{
+                        marginTop: "16px",
+                        padding: "14px",
+                        borderRadius: "8px",
+                        background: "#f5f5f5",
+                      }}
+                    >
+                      <p>
+                        <strong>Customer delivery details</strong>
+                      </p>
+
+                      <p style={{ marginTop: "8px" }}>
+                        <strong>Address:</strong>{" "}
+                        {details?.delivery_address ||
+                          "Loading address..."}
+                      </p>
+
+                      <p style={{ marginTop: "8px" }}>
+                        <strong>Phone:</strong>{" "}
+                        {details?.customer_phone ||
+                          "Loading phone..."}
+                      </p>
+
+                      <p style={{ marginTop: "12px" }}>
+                        Ask the customer for the 4-digit delivery
+                        PIN shown in their My Orders page.
+                      </p>
+
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        maxLength="4"
+                        value={deliveryCodes[delivery.id] || ""}
+                        onChange={(e) =>
+                          setDeliveryCodes((current) => ({
+                            ...current,
+                            [delivery.id]: e.target.value
+                              .replace(/\D/g, "")
+                              .slice(0, 4),
+                          }))
+                        }
+                        placeholder="Enter customer PIN"
+                        style={{
+                          width: "100%",
+                          marginTop: "12px",
+                          padding: "12px",
+                          border: "1px solid #ccc",
+                          borderRadius: "8px",
+                          letterSpacing: "4px",
+                          textAlign: "center",
+                          fontSize: "18px",
+                        }}
+                      />
+
+                      <button
+                        type="button"
+                        onClick={() =>
+                          confirmDelivery(delivery)
+                        }
+                        disabled={
+                          deliveryAction ===
+                          `delivery-${delivery.id}`
+                        }
+                        style={{
+                          marginTop: "12px",
+                          padding: "12px 18px",
+                          width: "100%",
+                        }}
+                      >
+                        {deliveryAction ===
+                        `delivery-${delivery.id}`
+                          ? "Confirming..."
+                          : "Confirm Delivery"}
+                      </button>
+                    </div>
+                  )}
+
+                  {/* DELIVERED */}
+                  {delivery.status === "delivered" && (
+                    <div
+                      style={{
+                        marginTop: "16px",
+                        padding: "14px",
+                        borderRadius: "8px",
+                        background: "#f5f5f5",
+                      }}
+                    >
+                      <p>
+                        <strong>✓ Delivery completed</strong>
+                      </p>
+
+                      {delivery.delivered_at && (
+                        <p
+                          style={{
+                            marginTop: "8px",
+                            opacity: 0.75,
+                          }}
+                        >
+                          Delivered:{" "}
+                          {new Date(
+                            delivery.delivered_at
+                          ).toLocaleString()}
+                        </p>
+                      )}
+                    </div>
+                  )}
+
+                  <p
+                    style={{
+                      marginTop: "12px",
+                      opacity: 0.75,
+                    }}
                   >
-                    {formatDeliveryStatus(
-                      delivery.status
-                    )}
-                  </span>
-                </div>
-
-                <p style={{ marginTop: "12px" }}>
-                  <strong>Delivery fee:</strong>{" "}
-                  {formatNaira(delivery.delivery_fee)}
-                </p>
-
-                {delivery.pickup_code && (
-                  <p>
-                    <strong>Pickup code:</strong>{" "}
-                    {delivery.pickup_code}
+                    Assigned:{" "}
+                    {new Date(
+                      delivery.created_at
+                    ).toLocaleString()}
                   </p>
-                )}
 
-                {delivery.delivery_code && (
-                  <p>
-                    <strong>Delivery code:</strong>{" "}
-                    {delivery.delivery_code}
-                  </p>
-                )}
-
-                <p style={{ marginTop: "8px", opacity: 0.75 }}>
-                  Assigned:{" "}
-                  {new Date(
-                    delivery.created_at
-                  ).toLocaleString()}
-                </p>
-
-                <div style={{ marginTop: "16px" }}>
-                  <OrderChat
-                    user={user}
-                    vendorOrderId={delivery.vendor_order_id}
-                    title="Chat about this delivery"
-                  />
+                  <div style={{ marginTop: "16px" }}>
+                    <OrderChat
+                      user={user}
+                      vendorOrderId={delivery.vendor_order_id}
+                      title="Chat about this delivery"
+                    />
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
 
