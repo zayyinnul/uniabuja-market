@@ -9,16 +9,47 @@ function VendorOrders({ user, onBack }) {
   const [updatingOrder, setUpdatingOrder] = useState(null)
   const [findingRiders, setFindingRiders] = useState(null)
   const [assigningRider, setAssigningRider] = useState(null)
+  const [takingOverDelivery, setTakingOverDelivery] = useState(null)
   const [availableRiders, setAvailableRiders] = useState({})
   const [deliveryCodes, setDeliveryCodes] = useState({})
+  const [openChats, setOpenChats] = useState({})
+  const [activeSection, setActiveSection] = useState('paid')
 
   useEffect(() => {
-    loadVendorOrders()
-  }, [])
+    if (!user) {
+      return
+    }
 
-  const loadVendorOrders = async () => {
-    setLoading(true)
-    setMessage('')
+    loadVendorOrders(true)
+  }, [user])
+
+  /*
+   * Keep the vendor dashboard synchronized with:
+   * - rider accepting/rejecting requests
+   * - vendor status changes
+   * - rider starting delivery
+   * - delivery completion
+   */
+  useEffect(() => {
+    if (!user) {
+      return
+    }
+
+    const interval = setInterval(() => {
+      loadVendorOrders(false)
+    }, 5000)
+
+    return () => clearInterval(interval)
+  }, [user])
+
+  const loadVendorOrders = async (showLoading = true) => {
+    if (!user) {
+      return
+    }
+
+    if (showLoading) {
+      setLoading(true)
+    }
 
     try {
       const { data, error } = await supabase.rpc(
@@ -30,20 +61,22 @@ function VendorOrders({ user, onBack }) {
         throw new Error(error.message)
       }
 
-      const { data: vendorOrderData, error: vendorError } =
-        await supabase
-          .from('vendor_orders')
-          .select(`
-            id,
-            order_id,
-            vendor_id,
-            status,
-            subtotal,
-            created_at,
-            updated_at
-          `)
-          .eq('vendor_id', user.id)
-          .order('created_at', { ascending: false })
+      const {
+        data: vendorOrderData,
+        error: vendorError,
+      } = await supabase
+        .from('vendor_orders')
+        .select(`
+          id,
+          order_id,
+          vendor_id,
+          status,
+          subtotal,
+          created_at,
+          updated_at
+        `)
+        .eq('vendor_id', user.id)
+        .order('created_at', { ascending: false })
 
       if (vendorError) {
         console.error(
@@ -53,30 +86,31 @@ function VendorOrders({ user, onBack }) {
         throw new Error(vendorError.message)
       }
 
-      const vendorOrderIds = (vendorOrderData || []).map(
-        (item) => item.id
-      )
+      const vendorOrderIds = (
+        vendorOrderData || []
+      ).map((item) => item.id)
 
       let deliveryData = []
 
       if (vendorOrderIds.length > 0) {
-        const { data: deliveries, error: deliveryError } =
-          await supabase
-            .from('deliveries')
-            .select(`
-              id,
-              vendor_order_id,
-              delivery_method,
-              rider_id,
-              delivery_fee,
-              status,
-              rider_request_status,
-              zone_id,
-              pickup_code,
-              created_at,
-              updated_at
-            `)
-            .in('vendor_order_id', vendorOrderIds)
+        const {
+          data: deliveries,
+          error: deliveryError,
+        } = await supabase
+          .from('deliveries')
+          .select(`
+            id,
+            vendor_order_id,
+            delivery_method,
+            rider_id,
+            delivery_fee,
+            status,
+            rider_request_status,
+            zone_id,
+            created_at,
+            updated_at
+          `)
+          .in('vendor_order_id', vendorOrderIds)
 
         if (deliveryError) {
           console.error(
@@ -92,19 +126,24 @@ function VendorOrders({ user, onBack }) {
       const statusMap = {}
       const deliveryMap = {}
 
-      ;(vendorOrderData || []).forEach((vendorOrder) => {
-        statusMap[vendorOrder.order_id] = vendorOrder
-      })
+      ;(vendorOrderData || []).forEach(
+        (vendorOrder) => {
+          statusMap[vendorOrder.order_id] =
+            vendorOrder
+        }
+      )
 
       ;(deliveryData || []).forEach((delivery) => {
-        deliveryMap[delivery.vendor_order_id] = delivery
+        deliveryMap[delivery.vendor_order_id] =
+          delivery
       })
 
       const groupedOrders = {}
 
       ;(data || []).forEach((item) => {
         if (!groupedOrders[item.order_id]) {
-          const vendorOrder = statusMap[item.order_id]
+          const vendorOrder =
+            statusMap[item.order_id]
 
           const delivery = vendorOrder
             ? deliveryMap[vendorOrder.id] || null
@@ -120,9 +159,13 @@ function VendorOrders({ user, onBack }) {
               'pending',
             payment_status:
               item.payment_status || 'unpaid',
-            delivery_address: item.delivery_address,
-            order_created_at: item.order_created_at,
-            vendor_order_id: vendorOrder?.id || null,
+            delivery_address:
+              item.delivery_address,
+            phone: item.phone,
+            order_created_at:
+              item.order_created_at,
+            vendor_order_id:
+              vendorOrder?.id || null,
             delivery,
             items: [],
           }
@@ -138,15 +181,22 @@ function VendorOrders({ user, onBack }) {
 
       setOrders(Object.values(groupedOrders))
     } catch (error) {
-      console.error('Load vendor orders error:', error)
-
-      setMessage(
-        error.message ||
-          'Could not load your incoming orders.'
+      console.error(
+        'Load vendor orders error:',
+        error
       )
-    }
 
-    setLoading(false)
+      if (showLoading) {
+        setMessage(
+          error.message ||
+            'Could not load your incoming orders.'
+        )
+      }
+    } finally {
+      if (showLoading) {
+        setLoading(false)
+      }
+    }
   }
 
   const findAvailableRiders = async (order) => {
@@ -159,7 +209,7 @@ function VendorOrders({ user, onBack }) {
 
     if (order.payment_status !== 'paid') {
       setMessage(
-        'Payment must be confirmed before selecting a rider.'
+        'Payment must be confirmed before looking for a rider.'
       )
       return
     }
@@ -168,12 +218,14 @@ function VendorOrders({ user, onBack }) {
     setMessage('')
 
     try {
-      const { data, error } = await supabase.rpc(
-        'get_available_delivery_riders',
-        {
-          p_delivery_id: order.delivery.id,
-        }
-      )
+      const { data, error } =
+        await supabase.rpc(
+          'get_available_delivery_riders',
+          {
+            p_delivery_id:
+              order.delivery.id,
+          }
+        )
 
       if (error) {
         console.error(
@@ -192,7 +244,7 @@ function VendorOrders({ user, onBack }) {
 
       if (riders.length === 0) {
         setMessage(
-          'No approved riders are currently available for this delivery zone.'
+          'No active riders are currently available.'
         )
       }
     } catch (error) {
@@ -205,9 +257,9 @@ function VendorOrders({ user, onBack }) {
         error.message ||
           'Could not find available riders.'
       )
+    } finally {
+      setFindingRiders(null)
     }
-
-    setFindingRiders(null)
   }
 
   const assignRider = async (order, rider) => {
@@ -227,53 +279,295 @@ function VendorOrders({ user, onBack }) {
     setMessage('')
 
     try {
-      const { error } = await supabase.rpc(
-        'vendor_assign_delivery_rider',
-        {
-          p_delivery_id: order.delivery.id,
-          p_rider_id: rider.rider_id,
-        }
-      )
+      const { error } =
+        await supabase.rpc(
+          'vendor_assign_delivery_rider',
+          {
+            p_delivery_id:
+              order.delivery.id,
+            p_rider_id:
+              rider.rider_id,
+          }
+        )
 
       if (error) {
         console.error(
-          'Assign rider error:',
+          'Request rider error:',
           error
         )
         throw new Error(error.message)
       }
 
-      /*
-       * Reload the complete vendor order after assignment.
-       *
-       * This ensures the latest rider_id, pickup_code,
-       * delivery status and other delivery fields are
-       * pulled directly from Supabase.
-       */
-      await loadVendorOrders()
+      await loadVendorOrders(false)
 
       setAvailableRiders((current) => {
         const updated = { ...current }
+
         delete updated[order.order_id]
+
         return updated
       })
 
       setMessage(
-        `${rider.rider_name || 'Rider'} has been assigned to this delivery.`
+        `Rider request sent to ${
+          rider.rider_name ||
+          'the selected rider'
+        }.`
       )
     } catch (error) {
       console.error(
-        'Assign rider error:',
+        'Request rider error:',
         error
       )
 
       setMessage(
         error.message ||
-          'Could not assign this rider.'
+          'Could not send the rider request.'
+      )
+    } finally {
+      setAssigningRider(null)
+    }
+  }
+
+  /*
+   * Vendor takes over delivery after a rider
+   * rejects or cancels the request.
+   */
+  const takeOverDelivery = async (order) => {
+    if (!order.delivery?.id) {
+      setMessage(
+        'Delivery record not found for this order.'
+      )
+      return
+    }
+
+    setTakingOverDelivery(order.order_id)
+    setMessage('')
+
+    try {
+      const { error } =
+        await supabase.rpc(
+          'vendor_take_over_delivery',
+          {
+            p_delivery_id:
+              order.delivery.id,
+          }
+        )
+
+      if (error) {
+        console.error(
+          'Take over delivery error:',
+          error
+        )
+        throw new Error(error.message)
+      }
+
+      setOrders((currentOrders) =>
+        currentOrders.map((currentOrder) =>
+          currentOrder.order_id ===
+          order.order_id
+            ? {
+                ...currentOrder,
+                delivery:
+                  currentOrder.delivery
+                    ? {
+                        ...currentOrder.delivery,
+                        delivery_method:
+                          'vendor',
+                        rider_id: null,
+                        rider_request_status:
+                          'not_requested',
+                      }
+                    : currentOrder.delivery,
+              }
+            : currentOrder
+        )
+      )
+
+      setMessage(
+        'You will deliver this order yourself.'
+      )
+
+      await loadVendorOrders(false)
+    } catch (error) {
+      console.error(
+        'Take over delivery error:',
+        error
+      )
+
+      setMessage(
+        error.message ||
+          'Could not take over this delivery.'
+      )
+    } finally {
+      setTakingOverDelivery(null)
+    }
+  }
+
+  /*
+   * Updates the delivery row.
+   *
+   * This is intentionally separate from the
+   * vendor_orders update because the Rider
+   * Dashboard reads deliveries.status.
+   */
+  const updateDeliveryStatus = async (
+    deliveryId,
+    status
+  ) => {
+    if (!deliveryId) {
+      return null
+    }
+
+    const {
+      data,
+      error,
+    } = await supabase
+      .from('deliveries')
+      .update({
+        status,
+        updated_at:
+          new Date().toISOString(),
+      })
+      .eq('id', deliveryId)
+      .select(`
+        id,
+        status,
+        rider_request_status
+      `)
+      .single()
+
+    if (error) {
+      console.error(
+        'Delivery status update error:',
+        error
+      )
+
+      throw new Error(
+        `Delivery status could not be updated: ${error.message}`
       )
     }
 
-    setAssigningRider(null)
+    if (!data) {
+      throw new Error(
+        'The delivery status was not updated.'
+      )
+    }
+
+    return data
+  }
+
+  /*
+   * Updates the vendor_orders row.
+   */
+  const updateVendorOrderStatus = async (
+    order,
+    nextStatus
+  ) => {
+    const {
+      data: updatedVendorOrder,
+      error,
+    } = await supabase
+      .from('vendor_orders')
+      .update({
+        status: nextStatus,
+        updated_at:
+          new Date().toISOString(),
+      })
+      .eq('id', order.vendor_order_id)
+      .eq('vendor_id', user.id)
+      .select(`
+        id,
+        status
+      `)
+      .single()
+
+    if (error) {
+      console.error(
+        'Vendor status update error:',
+        error
+      )
+
+      if (
+        error.message?.includes(
+          'Vendor order cannot advance until the parent order is paid'
+        )
+      ) {
+        throw new Error(
+          'Payment required: This order has not been paid for yet. You can accept it once payment is confirmed.'
+        )
+      }
+
+      throw new Error(error.message)
+    }
+
+    if (!updatedVendorOrder) {
+      throw new Error(
+        'The vendor order was not updated. Please refresh and try again.'
+      )
+    }
+
+    return updatedVendorOrder
+  }
+
+  /*
+   * Keep vendor_orders.status and deliveries.status
+   * synchronized for vendor-controlled stages.
+   */
+  const updateVendorAndDeliveryStatus = async (
+    order,
+    nextStatus
+  ) => {
+    if (!order.vendor_order_id) {
+      throw new Error(
+        'Vendor order record not found for this order.'
+      )
+    }
+
+    if (
+      order.payment_status !== 'paid'
+    ) {
+      throw new Error(
+        'Payment must be confirmed before this order can move forward.'
+      )
+    }
+
+    /*
+     * First update the vendor order.
+     */
+    await updateVendorOrderStatus(
+      order,
+      nextStatus
+    )
+
+    /*
+     * Then update the delivery row.
+     *
+     * RiderDashboard reads this row,
+     * so it must always match the
+     * vendor order status.
+     */
+    if (order.delivery?.id) {
+      try {
+        await updateDeliveryStatus(
+          order.delivery.id,
+          nextStatus
+        )
+      } catch (deliveryError) {
+        /*
+         * The vendor order has already changed.
+         * Surface the exact delivery error instead
+         * of pretending everything succeeded.
+         */
+        throw new Error(
+          `Vendor order changed to ${formatStatus(
+            nextStatus
+          )}, but the delivery status could not be synchronized. ${deliveryError.message}`
+        )
+      }
+    }
+
+    return true
   }
 
   const updateStatus = async (order) => {
@@ -293,19 +587,26 @@ function VendorOrders({ user, onBack }) {
       'delivered',
     ]
 
-    const currentIndex = statusFlow.indexOf(
-      order.order_status
-    )
+    const currentIndex =
+      statusFlow.indexOf(
+        order.order_status
+      )
 
     if (
       currentIndex === -1 ||
-      currentIndex >= statusFlow.length - 1
+      currentIndex >=
+        statusFlow.length - 1
     ) {
       return
     }
 
-    const nextStatus = statusFlow[currentIndex + 1]
+    const nextStatus =
+      statusFlow[currentIndex + 1]
 
+    /*
+     * Delivered is completed through the
+     * customer delivery PIN.
+     */
     if (nextStatus === 'delivered') {
       setMessage(
         'Enter the customer delivery code to complete this delivery.'
@@ -318,125 +619,182 @@ function VendorOrders({ user, onBack }) {
 
     try {
       /*
-       * READY → OUT FOR DELIVERY
+       * RIDER / VENDOR DELIVERY START
        *
-       * Delivery status is handled by the delivery RPC.
-       * This prevents the vendor from bypassing the
-       * delivery workflow.
+       * Vendor can control:
+       * pending -> accepted
+       * accepted -> processing
+       * processing -> ready
+       *
+       * For vendor self-delivery:
+       * ready -> out_for_delivery
+       *
+       * For rider delivery:
+       * the rider starts the delivery.
        */
-      if (nextStatus === 'out_for_delivery') {
+      if (
+        nextStatus ===
+        'out_for_delivery'
+      ) {
         if (!order.delivery?.id) {
           throw new Error(
             'Delivery record not found for this order.'
           )
         }
 
-        if (order.payment_status !== 'paid') {
+        if (
+          order.payment_status !==
+          'paid'
+        ) {
           throw new Error(
             'Payment must be confirmed before delivery can start.'
           )
         }
 
-        const { error: deliveryError } =
-          await supabase.rpc(
-            'mark_delivery_out_for_delivery',
-            {
-              p_delivery_id: order.delivery.id,
-            }
-          )
+        if (
+          order.delivery
+            .delivery_method ===
+          'rider'
+        ) {
+          if (
+            order.delivery
+              .rider_request_status !==
+            'accepted'
+          ) {
+            throw new Error(
+              'A rider must accept the delivery request before delivery can start.'
+            )
+          }
 
-        if (deliveryError) {
-          console.error(
-            'Start delivery error:',
-            deliveryError
+          throw new Error(
+            'The assigned rider must start the delivery.'
           )
-          throw new Error(deliveryError.message)
         }
 
-        const { error: orderError } =
-          await supabase
-            .from('vendor_orders')
-            .update({
-              status: 'out_for_delivery',
-              updated_at: new Date().toISOString(),
-            })
-            .eq('id', order.vendor_order_id)
-            .eq('vendor_id', user.id)
+        /*
+         * Vendor self-delivery.
+         *
+         * Keep vendor_orders and deliveries
+         * synchronized.
+         */
+        await updateVendorAndDeliveryStatus(
+          order,
+          'out_for_delivery'
+        )
 
-        if (orderError) {
-          console.error(
-            'Vendor order delivery status error:',
-            orderError
-          )
-          throw new Error(orderError.message)
-        }
-
-        setOrders((currentOrders) =>
-          currentOrders.map((currentOrder) =>
-            currentOrder.order_id === order.order_id
-              ? {
-                  ...currentOrder,
-                  order_status: 'out_for_delivery',
-                  delivery: {
-                    ...currentOrder.delivery,
-                    status: 'out_for_delivery',
-                  },
-                }
-              : currentOrder
-          )
+        setOrders(
+          (currentOrders) =>
+            currentOrders.map(
+              (currentOrder) =>
+                currentOrder.order_id ===
+                order.order_id
+                  ? {
+                      ...currentOrder,
+                      order_status:
+                        'out_for_delivery',
+                      delivery:
+                        currentOrder.delivery
+                          ? {
+                              ...currentOrder.delivery,
+                              status:
+                                'out_for_delivery',
+                            }
+                          : currentOrder.delivery,
+                    }
+                  : currentOrder
+            )
         )
 
         setMessage(
           'Order is now out for delivery.'
         )
 
+        await loadVendorOrders(false)
+
         return
       }
 
       /*
-       * All earlier vendor-order statuses:
-       * pending → accepted → processing → ready
+       * NORMAL VENDOR STATUS FLOW
+       *
+       * pending -> accepted
+       * accepted -> processing
+       * processing -> ready
+       *
+       * IMPORTANT:
+       * Both vendor_orders.status and
+       * deliveries.status are updated.
        */
-      const { error } = await supabase
-        .from('vendor_orders')
-        .update({
-          status: nextStatus,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', order.vendor_order_id)
-        .eq('vendor_id', user.id)
-
-      if (error) {
-        console.error(
-          'Vendor status update error:',
-          error
+      if (
+        [
+          'accepted',
+          'processing',
+          'ready',
+        ].includes(nextStatus)
+      ) {
+        await updateVendorAndDeliveryStatus(
+          order,
+          nextStatus
         )
-
-        if (
-          error.message?.includes(
-            'Vendor order cannot advance until the parent order is paid'
-          )
-        ) {
-          throw new Error(
-            'Payment required: This order has not been paid for yet. You can accept it once payment is confirmed.'
-          )
-        }
-
-        throw new Error(error.message)
+      } else {
+        await updateVendorOrderStatus(
+          order,
+          nextStatus
+        )
       }
 
-      setOrders((currentOrders) =>
-        currentOrders.map((currentOrder) =>
-          currentOrder.order_id === order.order_id
-            ? {
-                ...currentOrder,
-                order_status: nextStatus,
-              }
-            : currentOrder
-        )
+      /*
+       * Update the visible UI immediately.
+       */
+      setOrders(
+        (currentOrders) =>
+          currentOrders.map(
+            (currentOrder) =>
+              currentOrder.order_id ===
+              order.order_id
+                ? {
+                    ...currentOrder,
+                    order_status:
+                      nextStatus,
+                    delivery:
+                      currentOrder.delivery
+                        ? {
+                            ...currentOrder.delivery,
+                            status:
+                              [
+                                'accepted',
+                                'processing',
+                                'ready',
+                              ].includes(
+                                nextStatus
+                              )
+                                ? nextStatus
+                                : currentOrder
+                                    .delivery
+                                    .status,
+                          }
+                        : currentOrder.delivery,
+                  }
+                : currentOrder
+          )
       )
+
+      setMessage(
+        `Order status updated to ${formatStatus(
+          nextStatus
+        )}.`
+      )
+
+      /*
+       * Pull the real database state immediately.
+       * This also picks up rider acceptance/rejection.
+       */
+      await loadVendorOrders(false)
     } catch (error) {
-      console.error('Update status error:', error)
+      console.error(
+        'Update status error:',
+        error
+      )
 
       setMessage(
         error.message ||
@@ -456,7 +814,9 @@ function VendorOrders({ user, onBack }) {
     }
 
     const code =
-      deliveryCodes[order.order_id] || ''
+      deliveryCodes[
+        order.order_id
+      ] || ''
 
     if (!/^\d{4}$/.test(code)) {
       setMessage(
@@ -469,13 +829,15 @@ function VendorOrders({ user, onBack }) {
     setMessage('')
 
     try {
-      const { error } = await supabase.rpc(
-        'confirm_delivery_delivery',
-        {
-          p_delivery_id: order.delivery.id,
-          p_delivery_code: code,
-        }
-      )
+      const { error } =
+        await supabase.rpc(
+          'confirm_delivery_delivery',
+          {
+            p_delivery_id:
+              order.delivery.id,
+            p_delivery_code: code,
+          }
+        )
 
       if (error) {
         console.error(
@@ -485,50 +847,45 @@ function VendorOrders({ user, onBack }) {
         throw new Error(error.message)
       }
 
-      if (order.vendor_order_id) {
-        const { error: orderError } =
-          await supabase
-            .from('vendor_orders')
-            .update({
-              status: 'delivered',
-              updated_at: new Date().toISOString(),
-            })
-            .eq('id', order.vendor_order_id)
-            .eq('vendor_id', user.id)
-
-        if (orderError) {
-          console.error(
-            'Vendor delivered status error:',
-            orderError
+      setOrders(
+        (currentOrders) =>
+          currentOrders.map(
+            (currentOrder) =>
+              currentOrder.order_id ===
+              order.order_id
+                ? {
+                    ...currentOrder,
+                    order_status:
+                      'delivered',
+                    delivery: {
+                      ...currentOrder.delivery,
+                      status:
+                        'delivered',
+                    },
+                  }
+                : currentOrder
           )
-          throw new Error(orderError.message)
-        }
-      }
-
-      setOrders((currentOrders) =>
-        currentOrders.map((currentOrder) =>
-          currentOrder.order_id === order.order_id
-            ? {
-                ...currentOrder,
-                order_status: 'delivered',
-                delivery: {
-                  ...currentOrder.delivery,
-                  status: 'delivered',
-                },
-              }
-            : currentOrder
-        )
       )
 
-      setDeliveryCodes((currentCodes) => {
-        const updated = { ...currentCodes }
-        delete updated[order.order_id]
-        return updated
-      })
+      setDeliveryCodes(
+        (currentCodes) => {
+          const updated = {
+            ...currentCodes,
+          }
+
+          delete updated[
+            order.order_id
+          ]
+
+          return updated
+        }
+      )
 
       setMessage(
         'Delivery confirmed successfully. Order completed.'
       )
+
+      await loadVendorOrders(false)
     } catch (error) {
       console.error(
         'Confirm delivered error:',
@@ -545,7 +902,9 @@ function VendorOrders({ user, onBack }) {
   }
 
   const formatDate = (date) => {
-    return new Date(date).toLocaleString()
+    return new Date(
+      date
+    ).toLocaleString()
   }
 
   const formatStatus = (status) => {
@@ -561,12 +920,16 @@ function VendorOrders({ user, onBack }) {
   }
 
   const getVendorTotal = (order) => {
-    return order.items.reduce((total, item) => {
-      return (
-        total +
-        Number(item.unit_price) * item.quantity
-      )
-    }, 0)
+    return order.items.reduce(
+      (total, item) => {
+        return (
+          total +
+          Number(item.unit_price) *
+            item.quantity
+        )
+      },
+      0
+    )
   }
 
   const getNextStatus = (status) => {
@@ -579,185 +942,326 @@ function VendorOrders({ user, onBack }) {
       'delivered',
     ]
 
-    const currentIndex = statusFlow.indexOf(status)
+    const currentIndex =
+      statusFlow.indexOf(status)
 
     if (
       currentIndex === -1 ||
-      currentIndex >= statusFlow.length - 1
+      currentIndex >=
+        statusFlow.length - 1
     ) {
       return null
     }
 
-    return statusFlow[currentIndex + 1]
+    return statusFlow[
+      currentIndex + 1
+    ]
   }
 
   const getDeliveryAction = (order) => {
-    const delivery = order.delivery
+    const delivery =
+      order.delivery
 
     if (!delivery) {
       return null
     }
 
     /*
-     * RIDER ASSIGNED
-     *
-     * Important:
-     * Do NOT depend on delivery_method === 'rider'.
-     *
-     * The vendor can start with a vendor delivery record
-     * and later assign a UniAbuja Market rider.
-     *
-     * rider_id is the reliable indicator that a rider
-     * has been assigned.
+     * Rider request is waiting for response.
      */
     if (
-      delivery.rider_id &&
-      (
-        delivery.status === 'assigned' ||
-        delivery.status === 'ready_for_pickup' ||
-        delivery.status === 'picked_up'
-      )
+      delivery.delivery_method ===
+        'rider' &&
+      delivery.rider_request_status ===
+        'requested'
     ) {
       return (
         <div
           style={{
-            background: '#ecfdf5',
-            border: '1px solid #10b981',
+            background: '#fff7ed',
+            border:
+              '1px solid #f97316',
             borderRadius: '10px',
             padding: '14px',
             marginTop: '12px',
-            color: '#065f46',
+            color: '#9a3412',
           }}
         >
-          <strong>🛵 RIDER ASSIGNED</strong>
+          <strong>
+            🛵 RIDER REQUEST SENT
+          </strong>
 
           <p
             style={{
-              margin: '6px 0 10px',
+              margin: '6px 0 0',
             }}
           >
-            Give this pickup PIN to the rider when
-            they arrive to collect the order.
+            The rider has received the
+            request. Wait for the rider
+            to accept or reject it.
           </p>
-
-          {delivery.pickup_code ? (
-            <div
-              style={{
-                background: '#ffffff',
-                border: '2px dashed #10b981',
-                borderRadius: '10px',
-                padding: '12px',
-                textAlign: 'center',
-              }}
-            >
-              <div
-                style={{
-                  fontSize: '12px',
-                  fontWeight: '700',
-                  letterSpacing: '1px',
-                  marginBottom: '5px',
-                }}
-              >
-                PICKUP PIN
-              </div>
-
-              <div
-                style={{
-                  fontSize: '28px',
-                  fontWeight: '800',
-                  letterSpacing: '8px',
-                }}
-              >
-                {delivery.pickup_code}
-              </div>
-            </div>
-          ) : (
-            <div
-              style={{
-                background: '#fff7ed',
-                border: '1px solid #f97316',
-                borderRadius: '8px',
-                padding: '10px',
-                color: '#9a3412',
-              }}
-            >
-              <strong>
-                Pickup PIN is not available yet.
-              </strong>
-
-              <p
-                style={{
-                  margin: '5px 0 0',
-                  fontSize: '13px',
-                }}
-              >
-                The delivery record does not currently
-                contain a pickup PIN.
-              </p>
-            </div>
-          )}
 
           <p
             style={{
-              margin: '10px 0 0',
+              margin: '6px 0 0',
               fontSize: '13px',
             }}
           >
-            The rider will enter this PIN after
-            collecting the order from you.
+            Customer delivery details
+            remain private until the
+            rider accepts.
           </p>
         </div>
       )
     }
 
     /*
-     * VENDOR DELIVERY / FIND RIDER
-     *
-     * Vendor can deliver themselves or request/select
-     * an available UniAbuja Market rider.
+     * Rider has accepted.
      */
     if (
-      delivery.status === 'pending' &&
-      order.payment_status === 'paid'
+      delivery.delivery_method ===
+        'rider' &&
+      delivery.rider_request_status ===
+        'accepted'
+    ) {
+      return (
+        <div
+          style={{
+            background: '#ecfdf5',
+            border:
+              '1px solid #10b981',
+            borderRadius: '10px',
+            padding: '14px',
+            marginTop: '12px',
+            color: '#065f46',
+          }}
+        >
+          <strong>
+            🛵 RIDER ACCEPTED
+          </strong>
+
+          <p
+            style={{
+              margin: '6px 0 0',
+            }}
+          >
+            The rider has accepted this
+            delivery. Continue preparing
+            the order.
+          </p>
+
+          {order.order_status ===
+            'accepted' && (
+            <p
+              style={{
+                margin: '6px 0 0',
+                fontWeight: '600',
+              }}
+            >
+              Mark the order as Processing
+              when preparation begins.
+            </p>
+          )}
+
+          {order.order_status ===
+            'processing' && (
+            <p
+              style={{
+                margin: '6px 0 0',
+                fontWeight: '600',
+              }}
+            >
+              Mark the order as Ready when
+              it is ready for the rider.
+            </p>
+          )}
+
+          {order.order_status ===
+            'ready' && (
+            <p
+              style={{
+                margin: '6px 0 0',
+                fontWeight: '600',
+              }}
+            >
+              The rider can now pick up
+              the order and start delivery.
+            </p>
+          )}
+        </div>
+      )
+    }
+
+    /*
+     * Previous rider request ended.
+     *
+     * Vendor can either:
+     * 1. Deliver the order themselves.
+     * 2. Look for another rider.
+     */
+    if (
+      delivery.delivery_method ===
+        'rider' &&
+      delivery.rider_request_status ===
+        'cancelled'
+    ) {
+      return (
+        <div
+          style={{
+            background: '#fff7ed',
+            border:
+              '1px solid #f97316',
+            borderRadius: '10px',
+            padding: '14px',
+            marginTop: '12px',
+            color: '#9a3412',
+          }}
+        >
+          <strong>
+            🛵 RIDER REQUEST ENDED
+          </strong>
+
+          <p
+            style={{
+              margin: '6px 0 0',
+            }}
+          >
+            The previous rider request
+            was not accepted. You can
+            deliver the order yourself or
+            look for another rider.
+          </p>
+
+          {order.payment_status ===
+            'paid' &&
+            order.order_status !==
+              'delivered' &&
+            order.order_status !==
+              'cancelled' &&
+            ![
+              'out_for_delivery',
+            ].includes(
+              order.order_status
+            ) && (
+              <div
+                style={{
+                  display: 'flex',
+                  gap: '8px',
+                  flexWrap: 'wrap',
+                  marginTop: '10px',
+                }}
+              >
+                <button
+                  type="button"
+                  className="primary-btn"
+                  disabled={
+                    takingOverDelivery ===
+                    order.order_id
+                  }
+                  onClick={() =>
+                    takeOverDelivery(
+                      order
+                    )
+                  }
+                >
+                  {takingOverDelivery ===
+                  order.order_id
+                    ? 'Taking Over...'
+                    : 'Deliver Myself'}
+                </button>
+
+                <button
+                  type="button"
+                  className="secondary-btn"
+                  disabled={
+                    findingRiders ===
+                    order.order_id
+                  }
+                  onClick={() =>
+                    findAvailableRiders(
+                      order
+                    )
+                  }
+                >
+                  {findingRiders ===
+                  order.order_id
+                    ? 'Looking for Riders...'
+                    : 'Look for Another Rider'}
+                </button>
+              </div>
+            )}
+        </div>
+      )
+    }
+
+    /*
+     * Allow the vendor to look for a rider
+     * while the order is still in a vendor-
+     * controlled stage.
+     *
+     * Previously this only worked while
+     * delivery.status === 'pending'.
+     */
+    if (
+      ['pending', 'accepted', 'processing'].includes(
+        delivery.status
+      ) &&
+      order.payment_status ===
+        'paid' &&
+      delivery.rider_request_status !==
+        'accepted' &&
+      delivery.rider_request_status !==
+        'requested' &&
+      delivery.rider_request_status !==
+        'cancelled'
     ) {
       const riders =
-        availableRiders[order.order_id]
+        availableRiders[
+          order.order_id
+        ]
 
       return (
         <div
           style={{
             background: '#f8fafc',
-            border: '1px solid #cbd5e1',
+            border:
+              '1px solid #cbd5e1',
             borderRadius: '10px',
             padding: '14px',
             marginTop: '12px',
           }}
         >
-          <strong>🚚 DELIVERY</strong>
+          <strong>
+            🚚 DELIVERY
+          </strong>
 
           <p
             style={{
               margin: '6px 0 12px',
             }}
           >
-            You can deliver this order yourself,
-            or select an available rider to deliver
-            it for you.
+            You can deliver this order
+            yourself, or look for a
+            UniAbuja Market rider.
           </p>
 
           <button
             type="button"
             className="primary-btn"
             disabled={
-              findingRiders === order.order_id
+              findingRiders ===
+              order.order_id
             }
             onClick={() =>
-              findAvailableRiders(order)
+              findAvailableRiders(
+                order
+              )
             }
           >
-            {findingRiders === order.order_id
-              ? 'Finding Riders...'
-              : 'Find Available Riders'}
+            {findingRiders ===
+            order.order_id
+              ? 'Looking for Riders...'
+              : 'Look for Rider'}
           </button>
 
           {Array.isArray(riders) && (
@@ -769,119 +1273,170 @@ function VendorOrders({ user, onBack }) {
               {riders.length === 0 ? (
                 <div
                   style={{
-                    background: '#fff7ed',
-                    border: '1px solid #f97316',
-                    borderRadius: '10px',
-                    padding: '12px 14px',
-                    color: '#9a3412',
+                    background:
+                      '#fff7ed',
+                    border:
+                      '1px solid #f97316',
+                    borderRadius:
+                      '10px',
+                    padding:
+                      '12px 14px',
+                    color:
+                      '#9a3412',
                   }}
                 >
                   <strong>
-                    No riders available
+                    No active riders
+                    available
                   </strong>
 
                   <p
                     style={{
-                      margin: '5px 0 0',
+                      margin:
+                        '5px 0 0',
                     }}
                   >
-                    There are currently no approved
-                    riders available for this delivery
-                    zone.
+                    Try again later
+                    or deliver the
+                    order yourself.
                   </p>
                 </div>
               ) : (
                 <div>
                   <strong
                     style={{
-                      display: 'block',
-                      marginBottom: '10px',
+                      display:
+                        'block',
+                      marginBottom:
+                        '8px',
                     }}
                   >
                     Available Riders
                   </strong>
 
+                  <p
+                    style={{
+                      margin:
+                        '0 0 12px',
+                      fontSize:
+                        '13px',
+                      color:
+                        '#475569',
+                    }}
+                  >
+                    Contact the
+                    rider privately
+                    to discuss
+                    delivery price
+                    and terms before
+                    sending the
+                    request.
+                  </p>
+
                   <div
                     style={{
-                      display: 'grid',
+                      display:
+                        'grid',
                       gap: '10px',
                     }}
                   >
-                    {riders.map((rider) => (
-                      <div
-                        key={rider.rider_id}
-                        style={{
-                          background: '#ffffff',
-                          border: '1px solid #e2e8f0',
-                          borderRadius: '10px',
-                          padding: '12px',
-                        }}
-                      >
+                    {riders.map(
+                      (rider) => (
                         <div
+                          key={
+                            rider.rider_id
+                          }
                           style={{
-                            display: 'flex',
-                            justifyContent:
-                              'space-between',
-                            alignItems: 'center',
-                            gap: '12px',
+                            background:
+                              '#ffffff',
+                            border:
+                              '1px solid #e2e8f0',
+                            borderRadius:
+                              '10px',
+                            padding:
+                              '12px',
                           }}
                         >
-                          <div>
-                            <strong>
-                              🛵{' '}
-                              {rider.rider_name ||
-                                'Available Rider'}
-                            </strong>
+                          <div
+                            style={{
+                              display:
+                                'flex',
+                              justifyContent:
+                                'space-between',
+                              alignItems:
+                                'center',
+                              gap:
+                                '12px',
+                            }}
+                          >
+                            <div>
+                              <strong>
+                                🛵{' '}
+                                {rider.rider_name ||
+                                  'Available Rider'}
+                              </strong>
 
-                            {rider.rider_phone && (
+                              {rider.rider_phone && (
+                                <p
+                                  style={{
+                                    margin:
+                                      '5px 0 0',
+                                    fontSize:
+                                      '14px',
+                                    color:
+                                      '#475569',
+                                  }}
+                                >
+                                  📞{' '}
+                                  {
+                                    rider.rider_phone
+                                  }
+                                </p>
+                              )}
+
                               <p
                                 style={{
                                   margin:
-                                    '4px 0 0',
-                                  fontSize: '13px',
-                                  color: '#64748b',
+                                    '5px 0 0',
+                                  fontSize:
+                                    '12px',
+                                  color:
+                                    '#64748b',
                                 }}
                               >
-                                {rider.rider_phone}
+                                Discuss
+                                price and
+                                terms
+                                privately
+                                before
+                                requesting
+                                the rider.
                               </p>
-                            )}
+                            </div>
 
-                            <p
-                              style={{
-                                margin:
-                                  '4px 0 0',
-                                fontWeight: '600',
-                              }}
+                            <button
+                              type="button"
+                              className="primary-btn"
+                              disabled={
+                                assigningRider ===
+                                order.order_id
+                              }
+                              onClick={() =>
+                                assignRider(
+                                  order,
+                                  rider
+                                )
+                              }
                             >
-                              Rider fee: ₦
-                              {Number(
-                                rider.rider_fee || 0
-                              ).toLocaleString()}
-                            </p>
-                          </div>
-
-                          <button
-                            type="button"
-                            className="primary-btn"
-                            disabled={
-                              assigningRider ===
+                              {assigningRider ===
                               order.order_id
-                            }
-                            onClick={() =>
-                              assignRider(
-                                order,
-                                rider
-                              )
-                            }
-                          >
-                            {assigningRider ===
-                            order.order_id
-                              ? 'Assigning...'
-                              : 'Select Rider'}
-                          </button>
+                                ? 'Sending...'
+                                : 'Request Rider'}
+                            </button>
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      )
+                    )}
                   </div>
                 </div>
               )}
@@ -894,359 +1449,1004 @@ function VendorOrders({ user, onBack }) {
     return null
   }
 
+  const awaitingPaymentOrders =
+    orders.filter(
+      (order) =>
+        order.payment_status !==
+          'paid' &&
+        order.order_status !==
+          'cancelled'
+    )
+
+  const paidOrders =
+    orders.filter(
+      (order) =>
+        order.payment_status ===
+          'paid' &&
+        order.order_status !==
+          'cancelled'
+    )
+
+  const cancelledOrders =
+    orders.filter(
+      (order) =>
+        order.order_status ===
+        'cancelled'
+    )
+
+  const renderOrderCard = (order) => {
+    const nextStatus =
+      getNextStatus(
+        order.order_status
+      )
+
+    const isUpdating =
+      updatingOrder ===
+      order.order_id
+
+    const showDeliveryCode =
+      order.order_status ===
+      'out_for_delivery'
+
+    const chatOpen =
+      openChats[
+        order.order_id
+      ] === true
+
+    return (
+      <div
+        key={order.order_id}
+        style={{
+          border:
+            '1px solid #e2e8f0',
+          borderRadius: '14px',
+          padding: '18px',
+          marginBottom: '16px',
+          background: '#ffffff',
+        }}
+      >
+        <div
+          style={{
+            display: 'flex',
+            justifyContent:
+              'space-between',
+            alignItems:
+              'flex-start',
+            gap: '12px',
+            flexWrap: 'wrap',
+          }}
+        >
+          <div>
+            <h3
+              style={{
+                margin: 0,
+                fontSize: '17px',
+              }}
+            >
+              Order #
+              {order.order_id.slice(
+                0,
+                8
+              )}
+            </h3>
+
+            <p
+              style={{
+                margin:
+                  '5px 0 0',
+                fontSize:
+                  '13px',
+                color:
+                  '#64748b',
+              }}
+            >
+              {formatDate(
+                order.order_created_at
+              )}
+            </p>
+          </div>
+
+          <div
+            style={{
+              display:
+                'flex',
+              gap: '8px',
+              flexWrap:
+                'wrap',
+            }}
+          >
+            <span
+              style={{
+                padding:
+                  '6px 10px',
+                borderRadius:
+                  '999px',
+                background:
+                  order.payment_status ===
+                  'paid'
+                    ? '#dcfce7'
+                    : '#fef3c7',
+                color:
+                  order.payment_status ===
+                  'paid'
+                    ? '#166534'
+                    : '#92400e',
+                fontSize:
+                  '12px',
+                fontWeight:
+                  '700',
+              }}
+            >
+              {order.payment_status ===
+              'paid'
+                ? 'PAYMENT RECEIVED'
+                : 'AWAITING PAYMENT'}
+            </span>
+
+            <span
+              style={{
+                padding:
+                  '6px 10px',
+                borderRadius:
+                  '999px',
+                background:
+                  '#f1f5f9',
+                color:
+                  '#334155',
+                fontSize:
+                  '12px',
+                fontWeight:
+                  '700',
+              }}
+            >
+              {formatStatus(
+                order.order_status
+              )}
+            </span>
+          </div>
+        </div>
+
+        <div
+          style={{
+            marginTop:
+              '15px',
+          }}
+        >
+          <strong>
+            Items
+          </strong>
+
+          <div
+            style={{
+              marginTop:
+                '8px',
+              display:
+                'grid',
+              gap: '7px',
+            }}
+          >
+            {order.items.map(
+              (
+                item,
+                index
+              ) => (
+                <div
+                  key={`${item.product_id}-${index}`}
+                  style={{
+                    display:
+                      'flex',
+                    justifyContent:
+                      'space-between',
+                    gap: '10px',
+                    padding:
+                      '8px 0',
+                    borderBottom:
+                      '1px solid #f1f5f9',
+                  }}
+                >
+                  <div>
+                    <strong>
+                      {
+                        item.product_name
+                      }
+                    </strong>
+
+                    <div
+                      style={{
+                        fontSize:
+                          '13px',
+                        color:
+                          '#64748b',
+                      }}
+                    >
+                      Qty:{' '}
+                      {
+                        item.quantity
+                      }
+                    </div>
+                  </div>
+
+                  <span>
+                    ₦
+                    {(
+                      Number(
+                        item.unit_price
+                      ) *
+                      item.quantity
+                    ).toLocaleString()}
+                  </span>
+                </div>
+              )
+            )}
+          </div>
+        </div>
+
+        <div
+          style={{
+            display:
+              'flex',
+            justifyContent:
+              'space-between',
+            marginTop:
+              '14px',
+            fontWeight:
+              '700',
+          }}
+        >
+          <span>
+            Vendor Total
+          </span>
+
+          <span>
+            ₦
+            {getVendorTotal(
+              order
+            ).toLocaleString()}
+          </span>
+        </div>
+
+        {order.delivery_address && (
+          <div
+            style={{
+              marginTop:
+                '14px',
+              padding:
+                '12px',
+              background:
+                '#f8fafc',
+              borderRadius:
+                '10px',
+            }}
+          >
+            <strong>
+              Delivery Address
+            </strong>
+
+            <p
+              style={{
+                margin:
+                  '5px 0 0',
+                fontSize:
+                  '14px',
+              }}
+            >
+              {
+                order.delivery_address
+              }
+            </p>
+          </div>
+        )}
+
+        {order.delivery && (
+          <div
+            style={{
+              marginTop:
+                '12px',
+              fontSize:
+                '13px',
+              color:
+                '#475569',
+            }}
+          >
+            Delivery method:{' '}
+            <strong>
+              {order.delivery
+                .delivery_method ===
+              'rider'
+                ? 'Rider'
+                : 'Vendor'}
+            </strong>
+          </div>
+        )}
+
+        {getDeliveryAction(
+          order
+        )}
+
+        {order.payment_status ===
+          'paid' &&
+          order.order_status !==
+            'cancelled' &&
+          order.order_status !==
+            'delivered' && (
+            <div
+              style={{
+                marginTop:
+                  '14px',
+                display:
+                  'flex',
+                gap: '8px',
+                flexWrap:
+                  'wrap',
+              }}
+            >
+              {nextStatus &&
+                nextStatus !==
+                  'out_for_delivery' &&
+                nextStatus !==
+                  'delivered' && (
+                  <button
+                    type="button"
+                    className="primary-btn"
+                    disabled={
+                      isUpdating
+                    }
+                    onClick={() =>
+                      updateStatus(
+                        order
+                      )
+                    }
+                  >
+                    {isUpdating
+                      ? 'Updating...'
+                      : `Mark ${formatStatus(
+                          nextStatus
+                        )}`}
+                  </button>
+                )}
+
+              {order.order_status ===
+                'ready' &&
+                order.delivery
+                  ?.delivery_method !==
+                  'rider' && (
+                  <button
+                    type="button"
+                    className="primary-btn"
+                    disabled={
+                      isUpdating
+                    }
+                    onClick={() =>
+                      updateStatus(
+                        order
+                      )
+                    }
+                  >
+                    {isUpdating
+                      ? 'Starting...'
+                      : 'Start Delivery'}
+                  </button>
+                )}
+            </div>
+          )}
+
+        {showDeliveryCode &&
+          order.order_status !==
+            'delivered' && (
+            <div
+              style={{
+                marginTop:
+                  '14px',
+                padding:
+                  '14px',
+                background:
+                  '#f8fafc',
+                border:
+                  '1px solid #cbd5e1',
+                borderRadius:
+                  '10px',
+              }}
+            >
+              <strong>
+                Complete Delivery
+              </strong>
+
+              <p
+                style={{
+                  margin:
+                    '6px 0 10px',
+                  fontSize:
+                    '13px',
+                  color:
+                    '#475569',
+                }}
+              >
+                Enter the
+                4-digit
+                completion
+                PIN given by
+                the customer.
+              </p>
+
+              <div
+                style={{
+                  display:
+                    'flex',
+                  gap: '8px',
+                  flexWrap:
+                    'wrap',
+                }}
+              >
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={4}
+                  value={
+                    deliveryCodes[
+                      order.order_id
+                    ] || ''
+                  }
+                  onChange={(
+                    event
+                  ) => {
+                    const value =
+                      event.target.value.replace(
+                        /\D/g,
+                        ''
+                      )
+
+                    setDeliveryCodes(
+                      (
+                        currentCodes
+                      ) => ({
+                        ...currentCodes,
+                        [order.order_id]:
+                          value,
+                      })
+                    )
+                  }}
+                  placeholder="4-digit PIN"
+                  style={{
+                    padding:
+                      '10px',
+                    border:
+                      '1px solid #cbd5e1',
+                    borderRadius:
+                      '8px',
+                    width:
+                      '120px',
+                  }}
+                />
+
+                <button
+                  type="button"
+                  className="primary-btn"
+                  disabled={
+                    isUpdating
+                  }
+                  onClick={() =>
+                    confirmDelivered(
+                      order
+                    )
+                  }
+                >
+                  {isUpdating
+                    ? 'Confirming...'
+                    : 'Confirm Delivery'}
+                </button>
+              </div>
+            </div>
+          )}
+
+        <div
+          style={{
+            marginTop:
+              '14px',
+          }}
+        >
+          <button
+            type="button"
+            className="secondary-btn"
+            onClick={() =>
+              setOpenChats(
+                (current) => ({
+                  ...current,
+                  [order.order_id]:
+                    !current[
+                      order.order_id
+                    ],
+                })
+              )
+            }
+          >
+            {chatOpen
+              ? 'Close Order Chat'
+              : 'Open Order Chat'}
+          </button>
+        </div>
+
+        {chatOpen && (
+          <div
+            style={{
+              marginTop:
+                '12px',
+            }}
+          >
+            <OrderChat
+              orderId={
+                order.order_id
+              }
+              vendorOrderId={
+                order.vendor_order_id
+              }
+              user={user}
+            />
+          </div>
+        )}
+      </div>
+    )
+  }
+
   if (loading) {
     return (
-      <div className="loading-page">
-        <h2>UniAbuja Market</h2>
-        <p>Loading incoming orders...</p>
+      <div
+        style={{
+          padding:
+            '20px',
+        }}
+      >
+        <button
+          type="button"
+          onClick={onBack}
+          className="secondary-btn"
+        >
+          ← Back
+        </button>
+
+        <p>
+          Loading your
+          orders...
+        </p>
       </div>
     )
   }
 
   return (
-    <div className="orders-page">
-      <nav className="navbar">
-        <div className="logo">UniAbuja Market</div>
+    <div
+      style={{
+        padding:
+          '20px',
+        maxWidth:
+          '1000px',
+        margin:
+          '0 auto',
+      }}
+    >
+      <div
+        style={{
+          display:
+            'flex',
+          justifyContent:
+            'space-between',
+          alignItems:
+            'center',
+          gap: '12px',
+          flexWrap:
+            'wrap',
+          marginBottom:
+            '20px',
+        }}
+      >
+        <div>
+          <h2
+            style={{
+              margin: 0,
+            }}
+          >
+            Vendor Orders
+          </h2>
 
-        <button
-          type="button"
-          className="back-button"
-          onClick={onBack}
-        >
-          ← Back to Dashboard
-        </button>
-      </nav>
-
-      <main className="orders-container">
-        <div className="orders-header">
-          <p className="welcome-small">
-            VENDOR ORDERS
-          </p>
-
-          <h1>Incoming orders</h1>
-
-          <p>
-            Orders containing products from your store.
+          <p
+            style={{
+              margin:
+                '5px 0 0',
+              color:
+                '#64748b',
+            }}
+          >
+            Manage your
+            incoming
+            marketplace
+            orders.
           </p>
         </div>
 
-        {message && (
-          <div className="auth-message">
-            {message}
-          </div>
-        )}
+        <button
+          type="button"
+          onClick={onBack}
+          className="secondary-btn"
+        >
+          ← Back
+        </button>
+      </div>
 
-        {orders.length === 0 ? (
-          <div className="market-message">
-            <div className="empty-cart-icon">
-              📦
-            </div>
+      {message && (
+        <div
+          style={{
+            marginBottom:
+              '18px',
+            padding:
+              '12px 14px',
+            borderRadius:
+              '10px',
+            background:
+              '#eff6ff',
+            border:
+              '1px solid #bfdbfe',
+            color:
+              '#1e40af',
+          }}
+        >
+          {message}
+        </div>
+      )}
 
-            <h3>No incoming orders yet</h3>
+      {orders.length ===
+      0 ? (
+        <div
+          style={{
+            padding:
+              '30px',
+            textAlign:
+              'center',
+            background:
+              '#f8fafc',
+            borderRadius:
+              '12px',
+          }}
+        >
+          <p>
+            You don't
+            have any
+            vendor
+            orders yet.
+          </p>
+        </div>
+      ) : (
+        <>
+          <div
+            style={{
+              display:
+                'grid',
+              gridTemplateColumns:
+                'repeat(auto-fit, minmax(180px, 1fr))',
+              gap: '12px',
+              marginBottom:
+                '24px',
+            }}
+          >
+            <button
+              type="button"
+              onClick={() =>
+                setActiveSection(
+                  'awaiting'
+                )
+              }
+              style={{
+                padding:
+                  '18px',
+                borderRadius:
+                  '12px',
+                border:
+                  activeSection ===
+                  'awaiting'
+                    ? '2px solid #f59e0b'
+                    : '1px solid #fde68a',
+                background:
+                  '#fffbeb',
+                cursor:
+                  'pointer',
+                textAlign:
+                  'left',
+              }}
+            >
+              <div
+                style={{
+                  fontSize:
+                    '24px',
+                  marginBottom:
+                    '6px',
+                }}
+              >
+                🟡
+              </div>
 
-            <p>
-              Orders for your products will appear here.
-            </p>
+              <strong
+                style={{
+                  display:
+                    'block',
+                  fontSize:
+                    '16px',
+                  color:
+                    '#92400e',
+                }}
+              >
+                Awaiting
+                Payment
+              </strong>
+
+              <span
+                style={{
+                  display:
+                    'block',
+                  marginTop:
+                    '5px',
+                  color:
+                    '#78350f',
+                  fontSize:
+                    '14px',
+                }}
+              >
+                {
+                  awaitingPaymentOrders.length
+                }{' '}
+                order
+                {awaitingPaymentOrders.length !==
+                1
+                  ? 's'
+                  : ''}
+              </span>
+            </button>
 
             <button
               type="button"
-              className="primary-btn"
-              onClick={onBack}
+              onClick={() =>
+                setActiveSection(
+                  'paid'
+                )
+              }
+              style={{
+                padding:
+                  '18px',
+                borderRadius:
+                  '12px',
+                border:
+                  activeSection ===
+                  'paid'
+                    ? '2px solid #10b981'
+                    : '1px solid #bbf7d0',
+                background:
+                  '#f0fdf4',
+                cursor:
+                  'pointer',
+                textAlign:
+                  'left',
+              }}
             >
-              Back to Dashboard
+              <div
+                style={{
+                  fontSize:
+                    '24px',
+                  marginBottom:
+                    '6px',
+                }}
+              >
+                🟢
+              </div>
+
+              <strong
+                style={{
+                  display:
+                    'block',
+                  fontSize:
+                    '16px',
+                  color:
+                    '#166534',
+                }}
+              >
+                Paid Orders
+              </strong>
+
+              <span
+                style={{
+                  display:
+                    'block',
+                  marginTop:
+                    '5px',
+                  color:
+                    '#166534',
+                  fontSize:
+                    '14px',
+                }}
+              >
+                {paidOrders.length}{' '}
+                order
+                {paidOrders.length !==
+                1
+                  ? 's'
+                  : ''}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() =>
+                setActiveSection(
+                  'cancelled'
+                )
+              }
+              style={{
+                padding:
+                  '18px',
+                borderRadius:
+                  '12px',
+                border:
+                  activeSection ===
+                  'cancelled'
+                    ? '2px solid #ef4444'
+                    : '1px solid #fecaca',
+                background:
+                  '#fef2f2',
+                cursor:
+                  'pointer',
+                textAlign:
+                  'left',
+              }}
+            >
+              <div
+                style={{
+                  fontSize:
+                    '24px',
+                  marginBottom:
+                    '6px',
+                }}
+              >
+                🔴
+              </div>
+
+              <strong
+                style={{
+                  display:
+                    'block',
+                  fontSize:
+                    '16px',
+                  color:
+                    '#991b1b',
+                }}
+              >
+                Cancelled
+              </strong>
+
+              <span
+                style={{
+                  display:
+                    'block',
+                  marginTop:
+                    '5px',
+                  color:
+                    '#991b1b',
+                  fontSize:
+                    '14px',
+                }}
+              >
+                {
+                  cancelledOrders.length
+                }{' '}
+                order
+                {cancelledOrders.length !==
+                1
+                  ? 's'
+                  : ''}
+              </span>
             </button>
           </div>
-        ) : (
-          <div className="orders-list">
-            {orders.map((order) => {
-              const nextStatus = getNextStatus(
-                order.order_status
-              )
 
-              return (
+          {activeSection ===
+            'awaiting' && (
+            <section>
+              <h3>
+                🟡 Awaiting
+                Payment
+              </h3>
+
+              {awaitingPaymentOrders.length ===
+              0 ? (
                 <div
-                  className="order-card"
-                  key={order.order_id}
+                  style={{
+                    padding:
+                      '24px',
+                    textAlign:
+                      'center',
+                    background:
+                      '#f8fafc',
+                    borderRadius:
+                      '12px',
+                    color:
+                      '#64748b',
+                  }}
                 >
-                  <div className="order-card-header">
-                    <div>
-                      <span className="order-label">
-                        ORDER
-                      </span>
-
-                      <h2>
-                        #{order.order_id.slice(0, 8)}
-                      </h2>
-
-                      <p>
-                        {formatDate(
-                          order.order_created_at
-                        )}
-                      </p>
-                    </div>
-
-                    <span
-                      className={`order-status status-${order.order_status}`}
-                    >
-                      {formatStatus(
-                        order.order_status
-                      )}
-                    </span>
-                  </div>
-
-                  {order.payment_status === 'paid' && (
-                    <div
-                      style={{
-                        background: '#ecfdf5',
-                        border: '1px solid #10b981',
-                        borderRadius: '10px',
-                        padding: '12px 14px',
-                        margin: '12px 0',
-                        color: '#065f46',
-                      }}
-                    >
-                      <strong>
-                        🟢 PAYMENT RECEIVED
-                      </strong>
-
-                      <p
-                        style={{
-                          margin: '5px 0 0',
-                        }}
-                      >
-                        Customer payment has been
-                        confirmed. You can process
-                        this order.
-                      </p>
-                    </div>
-                  )}
-
-                  <div className="order-items">
-                    {order.items.map((item) => (
-                      <div
-                        className="order-item"
-                        key={item.product_id}
-                      >
-                        <div className="order-item-image">
-                          🛍️
-                        </div>
-
-                        <div className="order-item-info">
-                          <h3>
-                            {item.product_name}
-                          </h3>
-
-                          <p>
-                            Quantity: {item.quantity}
-                          </p>
-
-                          <p>
-                            Unit price: ₦
-                            {Number(
-                              item.unit_price
-                            ).toLocaleString()}
-                          </p>
-                        </div>
-
-                        <strong>
-                          ₦
-                          {(
-                            Number(item.unit_price) *
-                            item.quantity
-                          ).toLocaleString()}
-                        </strong>
-                      </div>
-                    ))}
-                  </div>
-
-                  <div className="order-delivery">
-                    <div>
-                      <strong>Payment</strong>
-
-                      <p>
-                        {order.payment_status ===
-                        'paid'
-                          ? '💳 Paid'
-                          : `💳 ${formatStatus(
-                              order.payment_status
-                            )}`}
-                      </p>
-                    </div>
-
-                    <div>
-                      <strong>Customer</strong>
-
-                      <p>
-                        Customer #
-                        {order.customer_id.slice(
-                          0,
-                          8
-                        )}
-                      </p>
-                    </div>
-
-                    <div>
-                      <strong>
-                        Delivery location
-                      </strong>
-
-                      <p>
-                        {order.delivery_address}
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="order-card-footer">
-                    <span>
-                      {order.items.length}{' '}
-                      {order.items.length === 1
-                        ? 'product'
-                        : 'products'}
-                    </span>
-
-                    <div>
-                      <span>Your total</span>
-
-                      <strong>
-                        ₦
-                        {getVendorTotal(
-                          order
-                        ).toLocaleString()}
-                      </strong>
-                    </div>
-                  </div>
-
-                  {getDeliveryAction(order)}
-
-                  {order.order_status ===
-                    'out_for_delivery' && (
-                    <div
-                      style={{
-                        background: '#fff7ed',
-                        border: '1px solid #f97316',
-                        borderRadius: '10px',
-                        padding: '14px',
-                        marginTop: '12px',
-                      }}
-                    >
-                      <strong>
-                        📦 COMPLETE DELIVERY
-                      </strong>
-
-                      <p
-                        style={{
-                          margin: '6px 0 10px',
-                        }}
-                      >
-                        Ask the customer for their
-                        4-digit delivery code, then
-                        enter it below to complete
-                        the order.
-                      </p>
-
-                      <input
-                        type="text"
-                        inputMode="numeric"
-                        maxLength={4}
-                        placeholder="Enter 4-digit code"
-                        value={
-                          deliveryCodes[
-                            order.order_id
-                          ] || ''
-                        }
-                        onChange={(event) => {
-                          const value =
-                            event.target.value
-                              .replace(/\D/g, '')
-                              .slice(0, 4)
-
-                          setDeliveryCodes(
-                            (currentCodes) => ({
-                              ...currentCodes,
-                              [order.order_id]:
-                                value,
-                            })
-                          )
-                        }}
-                        style={{
-                          width: '100%',
-                          boxSizing: 'border-box',
-                          padding: '12px',
-                          border:
-                            '1px solid #cbd5e1',
-                          borderRadius: '8px',
-                          fontSize: '18px',
-                          letterSpacing: '4px',
-                          textAlign: 'center',
-                          marginBottom: '10px',
-                        }}
-                      />
-
-                      <button
-                        type="button"
-                        className="primary-btn"
-                        disabled={
-                          updatingOrder ===
-                          order.order_id
-                        }
-                        onClick={() =>
-                          confirmDelivered(order)
-                        }
-                      >
-                        {updatingOrder ===
-                        order.order_id
-                          ? 'Confirming...'
-                          : 'Confirm Delivery'}
-                      </button>
-                    </div>
-                  )}
-
-                  {nextStatus &&
-                    nextStatus !== 'delivered' && (
-                    <button
-                      type="button"
-                      className="primary-btn"
-                      disabled={
-                        updatingOrder ===
-                        order.order_id
-                      }
-                      onClick={() =>
-                        updateStatus(order)
-                      }
-                    >
-                      {updatingOrder ===
-                      order.order_id
-                        ? 'Updating...'
-                        : `Mark as ${formatStatus(
-                            nextStatus
-                          )}`}
-                    </button>
-                  )}
-
-                  {order.order_status !== 'cancelled' &&
-                    order.vendor_order_id && (
-                    <OrderChat
-                      user={user}
-                      orderId={order.order_id}
-                      title={`Chat about order #${order.order_id.slice(
-                        0,
-                        8
-                      )}`}
-                    />
-                  )}
-
-                  {order.order_status ===
-                    'delivered' && (
-                    <p className="order-complete">
-                      ✅ This order has been delivered.
-                    </p>
-                  )}
+                  No orders
+                  awaiting
+                  payment.
                 </div>
-              )
-            })}
-          </div>
-        )}
-      </main>
+              ) : (
+                awaitingPaymentOrders.map(
+                  renderOrderCard
+                )
+              )}
+            </section>
+          )}
+
+          {activeSection ===
+            'paid' && (
+            <section>
+              <h3>
+                🟢 Paid Orders
+              </h3>
+
+              {paidOrders.length ===
+              0 ? (
+                <div
+                  style={{
+                    padding:
+                      '24px',
+                    textAlign:
+                      'center',
+                    background:
+                      '#f8fafc',
+                    borderRadius:
+                      '12px',
+                    color:
+                      '#64748b',
+                  }}
+                >
+                  No paid
+                  orders.
+                </div>
+              ) : (
+                paidOrders.map(
+                  renderOrderCard
+                )
+              )}
+            </section>
+          )}
+
+          {activeSection ===
+            'cancelled' && (
+            <section>
+              <h3>
+                🔴 Cancelled
+                Orders
+              </h3>
+
+              {cancelledOrders.length ===
+              0 ? (
+                <div
+                  style={{
+                    padding:
+                      '24px',
+                    textAlign:
+                      'center',
+                    background:
+                      '#f8fafc',
+                    borderRadius:
+                      '12px',
+                    color:
+                      '#64748b',
+                  }}
+                >
+                  No cancelled
+                  orders.
+                </div>
+              ) : (
+                cancelledOrders.map(
+                  renderOrderCard
+                )
+              )}
+            </section>
+          )}
+        </>
+      )}
     </div>
   )
 }

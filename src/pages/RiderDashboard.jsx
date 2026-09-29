@@ -2,10 +2,6 @@ import { useEffect, useState } from "react";
 import { supabase } from "../lib/supabase";
 import OrderChat from "../OrderChat";
 
-const WORKER_BASE_URL = import.meta.env.DEV
-  ? "http://127.0.0.1:8787"
-  : "";
-
 export default function RiderDashboard({ user, onBack }) {
   const [loading, setLoading] = useState(true);
 
@@ -29,39 +25,18 @@ export default function RiderDashboard({ user, onBack }) {
   const [submittingApplication, setSubmittingApplication] =
     useState(false);
 
-  const [zones, setZones] = useState([]);
-  const [fees, setFees] = useState({});
-  const [existingRates, setExistingRates] = useState({});
-  const [savingZone, setSavingZone] = useState(null);
-
   const [deliveries, setDeliveries] = useState([]);
   const [deliveriesLoading, setDeliveriesLoading] = useState(false);
 
   const [availableDeliveries, setAvailableDeliveries] = useState([]);
   const [availableDeliveriesLoading, setAvailableDeliveriesLoading] =
     useState(false);
-  const [claimingDelivery, setClaimingDelivery] = useState(null);
 
-  // Rider delivery actions
-  const [pickupCodes, setPickupCodes] = useState({});
+  const [refreshingDeliveries, setRefreshingDeliveries] = useState(false);
+
   const [deliveryCodes, setDeliveryCodes] = useState({});
   const [deliveryDetails, setDeliveryDetails] = useState({});
   const [deliveryAction, setDeliveryAction] = useState(null);
-
-  // Payout account
-  const [payoutAccount, setPayoutAccount] = useState(null);
-  const [payoutLoading, setPayoutLoading] = useState(false);
-  const [savingPayout, setSavingPayout] = useState(false);
-  const [loadingBanks, setLoadingBanks] = useState(false);
-  const [verifyingPayout, setVerifyingPayout] = useState(false);
-
-  const [payoutBanks, setPayoutBanks] = useState([]);
-  const [selectedPayoutBank, setSelectedPayoutBank] = useState("");
-  const [payoutAccountName, setPayoutAccountName] = useState("");
-  const [payoutBankName, setPayoutBankName] = useState("");
-  const [payoutBankCode, setPayoutBankCode] = useState("");
-  const [payoutAccountNumber, setPayoutAccountNumber] = useState("");
-  const [payoutEditing, setPayoutEditing] = useState(false);
 
   const [message, setMessage] = useState("");
 
@@ -74,40 +49,57 @@ export default function RiderDashboard({ user, onBack }) {
     }
   }, [user]);
 
+  /*
+    Automatic rider dashboard refresh.
+
+    This keeps the dashboard synchronized when:
+    - vendor accepts the order
+    - vendor starts processing
+    - vendor marks the order ready
+    - rider request status changes
+
+    No database changes are required.
+  */
   useEffect(() => {
     if (!user || !isRider) {
       return;
     }
 
     const interval = setInterval(() => {
-      loadAvailableDeliveries();
-      loadAssignedDeliveries();
-    }, 15000);
+      loadAssignedDeliveries(false);
+      loadAvailableDeliveries(false);
+    }, 5000);
 
     return () => clearInterval(interval);
   }, [user, isRider]);
 
-  async function getWorkerHeaders() {
-    const {
-      data: { session },
-    } = await supabase.auth.getSession();
+  async function refreshDeliveries() {
+    if (!user || !isRider || refreshingDeliveries) {
+      return;
+    }
 
-    return {
-      Authorization: `Bearer ${session?.access_token || ""}`,
-      "Content-Type": "application/json",
-    };
+    setRefreshingDeliveries(true);
+    setMessage("");
+
+    try {
+      await Promise.all([
+        loadAvailableDeliveries(true),
+        loadAssignedDeliveries(true),
+      ]);
+    } finally {
+      setRefreshingDeliveries(false);
+    }
   }
 
   async function loadData() {
     setLoading(true);
     setMessage("");
 
-    const { data: profileData, error: profileError } =
-      await supabase
-        .from("profiles")
-        .select("id, full_name, phone")
-        .eq("id", user.id)
-        .maybeSingle();
+    const { data: profileData, error: profileError } = await supabase
+      .from("profiles")
+      .select("id, full_name, phone")
+      .eq("id", user.id)
+      .maybeSingle();
 
     if (profileError) {
       console.error("Profile error:", profileError);
@@ -120,12 +112,11 @@ export default function RiderDashboard({ user, onBack }) {
 
     setProfileName(officialName);
 
-    const { data: riderDataResult, error: riderError } =
-      await supabase
-        .from("delivery_riders")
-        .select("id, is_active, created_at, updated_at")
-        .eq("id", user.id)
-        .maybeSingle();
+    const { data: riderDataResult, error: riderError } = await supabase
+      .from("delivery_riders")
+      .select("id, is_active, created_at, updated_at")
+      .eq("id", user.id)
+      .maybeSingle();
 
     if (riderError) {
       console.error("Rider check error:", riderError);
@@ -205,380 +196,63 @@ export default function RiderDashboard({ user, onBack }) {
       return;
     }
 
-    const { data: zonesData, error: zonesError } =
-      await supabase
-        .from("delivery_zones")
-        .select("id, name")
-        .eq("is_active", true)
-        .order("name");
-
-    if (zonesError) {
-      console.error("Zones error:", zonesError);
-      setMessage(zonesError.message);
-      setLoading(false);
-      return;
-    }
-
-    const { data: ratesData, error: ratesError } =
-      await supabase
-        .from("rider_delivery_rates")
-        .select(
-          "zone_id, proposed_fee, approved_fee, approval_status, is_active"
-        )
-        .eq("rider_id", user.id);
-
-    if (ratesError) {
-      console.error("Rates error:", ratesError);
-      setMessage(ratesError.message);
-      setLoading(false);
-      return;
-    }
-
-    const feeMap = {};
-    const rateMap = {};
-
-    (ratesData || []).forEach((rate) => {
-      feeMap[rate.zone_id] = rate.proposed_fee;
-      rateMap[rate.zone_id] = rate;
-    });
-
-    setZones(zonesData || []);
-    setFees(feeMap);
-    setExistingRates(rateMap);
-
-    await loadPayoutAccount();
-    await loadPayoutBanks();
-    await loadAssignedDeliveries();
-    await loadAvailableDeliveries();
+    await Promise.all([
+      loadAssignedDeliveries(true),
+      loadAvailableDeliveries(true),
+    ]);
 
     setLoading(false);
   }
 
-  async function loadPayoutBanks() {
-    setLoadingBanks(true);
-
-    try {
-      const headers = await getWorkerHeaders();
-
-      const response = await fetch(
-        `${WORKER_BASE_URL}/api/payouts/banks`,
-        {
-          method: "GET",
-          headers,
-        }
-      );
-
-      const data = await response.json();
-
-      if (!response.ok || !data?.status) {
-        throw new Error(
-          data?.message || "Unable to load banks."
-        );
-      }
-
-      setPayoutBanks(data.data || []);
-    } catch (error) {
-      console.error("Load payout banks error:", error);
-
-      setMessage(
-        error?.message ||
-          "Unable to load the bank list. Please try again."
-      );
-    } finally {
-      setLoadingBanks(false);
+  async function loadAssignedDeliveries(showLoading = true) {
+    if (showLoading) {
+      setDeliveriesLoading(true);
     }
-  }
-
-  async function loadPayoutAccount() {
-    setPayoutLoading(true);
-
-    const { data, error } = await supabase
-      .from("rider_payout_accounts")
-      .select(
-        `
-          id,
-          rider_id,
-          account_name,
-          bank_code,
-          bank_name,
-          account_number,
-          paystack_recipient_code,
-          is_verified,
-          is_active,
-          created_at,
-          updated_at
-        `
-      )
-      .eq("rider_id", user.id)
-      .maybeSingle();
-
-    if (error) {
-      console.error("Payout account error:", error);
-
-      setPayoutAccount(null);
-      setPayoutLoading(false);
-      return;
-    }
-
-    setPayoutAccount(data || null);
-
-    if (data) {
-      setPayoutAccountName(data.account_name || "");
-      setPayoutBankName(data.bank_name || "");
-      setPayoutBankCode(data.bank_code || "");
-      setPayoutAccountNumber(data.account_number || "");
-      setSelectedPayoutBank(data.bank_code || "");
-    }
-
-    setPayoutLoading(false);
-  }
-
-  function handlePayoutBankChange(bankCode) {
-    setSelectedPayoutBank(bankCode);
-
-    const selectedBank = payoutBanks.find(
-      (bank) => String(bank.code) === String(bankCode)
-    );
-
-    setPayoutBankCode(selectedBank?.code || "");
-    setPayoutBankName(selectedBank?.name || "");
-
-    setPayoutAccountName("");
-  }
-
-  async function verifyPayoutAccount() {
-    const accountNumber = payoutAccountNumber.replace(/\s/g, "");
-
-    if (!selectedPayoutBank) {
-      setMessage("Please select your bank.");
-      return;
-    }
-
-    if (!/^\d{10}$/.test(accountNumber)) {
-      setMessage("Please enter a valid 10-digit account number.");
-      return;
-    }
-
-    const selectedBank = payoutBanks.find(
-      (bank) =>
-        String(bank.code) === String(selectedPayoutBank)
-    );
-
-    if (!selectedBank) {
-      setMessage("Please select a valid bank.");
-      return;
-    }
-
-    setVerifyingPayout(true);
-    setMessage("");
-
-    try {
-      const headers = await getWorkerHeaders();
-
-      const response = await fetch(
-        `${WORKER_BASE_URL}/api/payouts/resolve-account`,
-        {
-          method: "POST",
-          headers,
-          body: JSON.stringify({
-            account_number: accountNumber,
-            bank_code: selectedBank.code,
-          }),
-        }
-      );
-
-      const data = await response.json();
-
-      if (!response.ok || !data?.success) {
-        throw new Error(
-          data?.message ||
-            "Unable to verify this bank account."
-        );
-      }
-
-      setPayoutAccountName(data.account_name || "");
-      setPayoutBankName(selectedBank.name);
-      setPayoutBankCode(selectedBank.code);
-      setSelectedPayoutBank(selectedBank.code);
-      setPayoutAccountNumber(
-        data.account_number || accountNumber
-      );
-
-      setMessage(
-        `Account verified: ${data.account_name || "Account holder"}`
-      );
-    } catch (error) {
-      console.error("Verify payout account error:", error);
-
-      setPayoutAccountName("");
-
-      setMessage(
-        error?.message ||
-          "Unable to verify this account. Please check the details and try again."
-      );
-    } finally {
-      setVerifyingPayout(false);
-    }
-  }
-
-  async function savePayoutAccount(e) {
-    e.preventDefault();
-
-    const accountName = payoutAccountName.trim();
-    const accountNumber = payoutAccountNumber.replace(/\s/g, "");
-
-    const selectedBank = payoutBanks.find(
-      (bank) =>
-        String(bank.code) === String(selectedPayoutBank)
-    );
-
-    if (!selectedBank) {
-      setMessage("Please select your bank.");
-      return;
-    }
-
-    if (!/^\d{10}$/.test(accountNumber)) {
-      setMessage("Please enter a valid 10-digit account number.");
-      return;
-    }
-
-    if (!accountName) {
-      setMessage(
-        "Please verify your account before saving it."
-      );
-      return;
-    }
-
-    setSavingPayout(true);
-    setMessage("");
-
-    try {
-      if (payoutAccount) {
-        const { data, error } = await supabase
-          .from("rider_payout_accounts")
-          .update({
-            account_name: accountName,
-            bank_name: selectedBank.name,
-            bank_code: selectedBank.code,
-            account_number: accountNumber,
-            paystack_recipient_code: null,
-            is_verified: true,
-            is_active: true,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", payoutAccount.id)
-          .eq("rider_id", user.id)
-          .select()
-          .single();
-
-        if (error) {
-          console.error(
-            "Update payout account error:",
-            error
-          );
-
-          setMessage(error.message);
-          setSavingPayout(false);
-          return;
-        }
-
-        setPayoutAccount(data);
-
-        setMessage(
-          "Your payout account has been updated successfully."
-        );
-      } else {
-        const { data, error } = await supabase
-          .from("rider_payout_accounts")
-          .insert({
-            rider_id: user.id,
-            account_name: accountName,
-            bank_name: selectedBank.name,
-            bank_code: selectedBank.code,
-            account_number: accountNumber,
-            paystack_recipient_code: null,
-            is_verified: true,
-            is_active: true,
-          })
-          .select()
-          .single();
-
-        if (error) {
-          console.error(
-            "Create payout account error:",
-            error
-          );
-
-          setMessage(error.message);
-          setSavingPayout(false);
-          return;
-        }
-
-        setPayoutAccount(data);
-
-        setMessage(
-          "Your payout account has been saved successfully."
-        );
-      }
-
-      setPayoutEditing(false);
-
-      await loadPayoutAccount();
-    } catch (error) {
-      console.error("Payout account error:", error);
-
-      setMessage(
-        error?.message ||
-          "Unable to save your payout account."
-      );
-    }
-
-    setSavingPayout(false);
-  }
-
-  function startEditingPayout() {
-    if (!payoutAccount) {
-      return;
-    }
-
-    setSelectedPayoutBank(payoutAccount.bank_code || "");
-    setPayoutAccountName(payoutAccount.account_name || "");
-    setPayoutBankName(payoutAccount.bank_name || "");
-    setPayoutBankCode(payoutAccount.bank_code || "");
-    setPayoutAccountNumber(
-      payoutAccount.account_number || ""
-    );
-    setPayoutEditing(true);
-    setMessage("");
-  }
-
-  async function loadAssignedDeliveries() {
-    setDeliveriesLoading(true);
 
     const { data, error } = await supabase
       .from("deliveries")
-      .select(`
-        id,
-        vendor_order_id,
-        delivery_method,
-        delivery_fee,
-        status,
-        picked_up_at,
-        delivered_at,
-        created_at,
-        updated_at
-      `)
+      .select(
+        `
+          id,
+          vendor_order_id,
+          delivery_method,
+          delivery_fee,
+          status,
+          delivered_at,
+          created_at,
+          updated_at,
+          rider_request_status
+        `
+      )
       .eq("rider_id", user.id)
+      .eq("rider_request_status", "accepted")
+      .eq("delivery_method", "rider")
       .order("created_at", { ascending: false });
 
     if (error) {
       console.error("Assigned deliveries error:", error);
       setMessage(error.message);
-      setDeliveriesLoading(false);
+
+      if (showLoading) {
+        setDeliveriesLoading(false);
+      }
+
       return;
     }
 
     const assignedDeliveries = data || [];
+
+    console.log(
+      "RIDER DELIVERY DATA:",
+      assignedDeliveries.map((delivery) => ({
+        id: delivery.id,
+        vendor_order_id: delivery.vendor_order_id,
+        status: delivery.status,
+        delivery_method: delivery.delivery_method,
+        rider_request_status: delivery.rider_request_status,
+        rider_id: user.id,
+      }))
+    );
 
     const detailResults = await Promise.all(
       assignedDeliveries.map(async (delivery) => {
@@ -619,11 +293,16 @@ export default function RiderDashboard({ user, onBack }) {
 
     setDeliveryDetails(detailsMap);
     setDeliveries(assignedDeliveries);
-    setDeliveriesLoading(false);
+
+    if (showLoading) {
+      setDeliveriesLoading(false);
+    }
   }
 
-  async function loadAvailableDeliveries() {
-    setAvailableDeliveriesLoading(true);
+  async function loadAvailableDeliveries(showLoading = true) {
+    if (showLoading) {
+      setAvailableDeliveriesLoading(true);
+    }
 
     const { data, error } = await supabase.rpc(
       "get_available_rider_deliveries"
@@ -636,110 +315,112 @@ export default function RiderDashboard({ user, onBack }) {
       );
 
       setAvailableDeliveries([]);
-      setAvailableDeliveriesLoading(false);
+
+      if (showLoading) {
+        setAvailableDeliveriesLoading(false);
+      }
+
       return;
     }
 
     setAvailableDeliveries(data || []);
-    setAvailableDeliveriesLoading(false);
+
+    if (showLoading) {
+      setAvailableDeliveriesLoading(false);
+    }
   }
 
-  async function claimDelivery(deliveryId) {
-    if (!deliveryId || claimingDelivery) {
+  async function acceptDelivery(requestId) {
+    if (!requestId || deliveryAction) {
       return;
     }
 
-    setClaimingDelivery(deliveryId);
+    setDeliveryAction(`accept-${requestId}`);
     setMessage("");
 
     const { error } = await supabase.rpc(
-      "claim_delivery",
+      "accept_delivery_rider_request",
       {
-        p_delivery_id: deliveryId,
+        p_request_id: requestId,
       }
     );
 
     if (error) {
-      console.error("Claim delivery error:", error);
+      console.error(
+        "Accept rider request error:",
+        error
+      );
 
       setMessage(
         error?.message ||
-          "This delivery could not be claimed. It may already have been taken."
-      );
-
-      setClaimingDelivery(null);
-
-      await loadAvailableDeliveries();
-      await loadAssignedDeliveries();
-
-      return;
-    }
-
-    setMessage("Delivery claimed successfully.");
-
-    setClaimingDelivery(null);
-
-    await loadAvailableDeliveries();
-    await loadAssignedDeliveries();
-  }
-
-  async function confirmPickup(delivery) {
-    const code = String(
-      pickupCodes[delivery.id] || ""
-    ).trim();
-
-    if (!/^\d{4}$/.test(code)) {
-      setMessage(
-        "Enter the 4-digit pickup PIN given to you by the vendor."
-      );
-      return;
-    }
-
-    if (delivery.status !== "ready_for_pickup") {
-      setMessage(
-        "The vendor has not marked this delivery as ready for pickup yet."
-      );
-      return;
-    }
-
-    setDeliveryAction(`pickup-${delivery.id}`);
-    setMessage("");
-
-    const { error } = await supabase.rpc(
-      "confirm_delivery_pickup",
-      {
-        p_delivery_id: delivery.id,
-        p_pickup_code: code,
-      }
-    );
-
-    if (error) {
-      console.error("Confirm pickup error:", error);
-
-      setMessage(
-        error?.message ||
-          "The pickup PIN is incorrect or the delivery cannot be picked up yet."
+          "This delivery request could not be accepted. It may no longer be available."
       );
 
       setDeliveryAction(null);
+
+      await loadAvailableDeliveries(true);
+      await loadAssignedDeliveries(true);
+
       return;
     }
 
-    setPickupCodes((current) => ({
-      ...current,
-      [delivery.id]: "",
-    }));
-
     setMessage(
-      "Pickup confirmed. You can now see the customer delivery details."
+      "Delivery accepted. Customer delivery details are now available."
     );
 
     setDeliveryAction(null);
 
-    await loadAssignedDeliveries();
+    await loadAvailableDeliveries(true);
+    await loadAssignedDeliveries(true);
+  }
+
+  async function rejectDelivery(requestId) {
+    if (!requestId || deliveryAction) {
+      return;
+    }
+
+    setDeliveryAction(`reject-${requestId}`);
+    setMessage("");
+
+    const { error } = await supabase.rpc(
+      "reject_delivery_rider_request",
+      {
+        p_request_id: requestId,
+      }
+    );
+
+    if (error) {
+      console.error(
+        "Reject rider request error:",
+        error
+      );
+
+      setMessage(
+        error?.message ||
+          "This delivery request could not be rejected."
+      );
+
+      setDeliveryAction(null);
+
+      return;
+    }
+
+    setMessage("Delivery request rejected.");
+
+    setDeliveryAction(null);
+
+    await loadAvailableDeliveries(true);
+    await loadAssignedDeliveries(true);
   }
 
   async function startDelivery(delivery) {
+    if (delivery.status !== "ready") {
+      setMessage(
+        "The vendor must mark the order as ready before you can start the delivery."
+      );
+      return;
+    }
+
     setDeliveryAction(`start-${delivery.id}`);
     setMessage("");
 
@@ -751,7 +432,10 @@ export default function RiderDashboard({ user, onBack }) {
     );
 
     if (error) {
-      console.error("Start delivery error:", error);
+      console.error(
+        "Start delivery error:",
+        error
+      );
 
       setMessage(
         error?.message ||
@@ -763,18 +447,25 @@ export default function RiderDashboard({ user, onBack }) {
     }
 
     setMessage(
-      "Delivery started. The customer can now see their delivery PIN."
+      "Delivery started. Meet the customer and collect the 4-digit completion PIN when you hand over the order."
     );
 
     setDeliveryAction(null);
 
-    await loadAssignedDeliveries();
+    await loadAssignedDeliveries(true);
   }
 
   async function confirmDelivery(delivery) {
     const code = String(
       deliveryCodes[delivery.id] || ""
     ).trim();
+
+    if (delivery.status !== "out_for_delivery") {
+      setMessage(
+        "This delivery is not currently out for delivery."
+      );
+      return;
+    }
 
     if (!/^\d{4}$/.test(code)) {
       setMessage(
@@ -795,7 +486,10 @@ export default function RiderDashboard({ user, onBack }) {
     );
 
     if (error) {
-      console.error("Confirm delivery error:", error);
+      console.error(
+        "Confirm delivery error:",
+        error
+      );
 
       setMessage(
         error?.message ||
@@ -811,11 +505,13 @@ export default function RiderDashboard({ user, onBack }) {
       [delivery.id]: "",
     }));
 
-    setMessage("Delivery completed successfully.");
+    setMessage(
+      "Delivery completed successfully."
+    );
 
     setDeliveryAction(null);
 
-    await loadAssignedDeliveries();
+    await loadAssignedDeliveries(true);
   }
 
   function validateApplicationFile(file, label) {
@@ -969,7 +665,8 @@ export default function RiderDashboard({ user, onBack }) {
           level: level.trim(),
           passport_photo_path: passportPath,
           student_id_document_path: studentIdPath,
-          emergency_contact_name: emergencyContactName.trim(),
+          emergency_contact_name:
+            emergencyContactName.trim(),
           emergency_contact_phone:
             emergencyContactPhone.trim(),
           has_vehicle: hasVehicle === "yes",
@@ -1039,54 +736,6 @@ export default function RiderDashboard({ user, onBack }) {
     setSubmittingApplication(false);
   }
 
-  function handleFeeChange(zoneId, value) {
-    setFees((current) => ({
-      ...current,
-      [zoneId]: value,
-    }));
-  }
-
-  async function saveFee(zoneId) {
-    const value = fees[zoneId];
-
-    if (value === undefined || value === "") {
-      setMessage("Enter a delivery fee first.");
-      return;
-    }
-
-    const fee = Number(value);
-
-    if (!Number.isFinite(fee) || fee < 0) {
-      setMessage("Enter a valid delivery fee.");
-      return;
-    }
-
-    setSavingZone(zoneId);
-    setMessage("");
-
-    const { error } = await supabase.rpc(
-      "set_rider_delivery_rate",
-      {
-        p_zone_id: zoneId,
-        p_proposed_fee: fee,
-      }
-    );
-
-    if (error) {
-      console.error("Save rider rate error:", error);
-      setMessage(error.message);
-      setSavingZone(null);
-      return;
-    }
-
-    setMessage(
-      "Fee submitted. It will become active after admin approval."
-    );
-
-    await loadData();
-    setSavingZone(null);
-  }
-
   function formatDeliveryStatus(status) {
     if (!status) {
       return "Unknown";
@@ -1094,35 +743,9 @@ export default function RiderDashboard({ user, onBack }) {
 
     return status
       .replace(/_/g, " ")
-      .replace(/\b\w/g, (letter) => letter.toUpperCase());
-  }
-
-  function formatNaira(value) {
-    const amount = Number(value);
-
-    if (!Number.isFinite(amount)) {
-      return "₦0";
-    }
-
-    if (amount === 0) {
-      return "🎉 Free delivery";
-    }
-
-    return `₦${amount.toLocaleString()}`;
-  }
-
-  function maskAccountNumber(accountNumber) {
-    if (!accountNumber) {
-      return "";
-    }
-
-    const value = String(accountNumber);
-
-    if (value.length <= 4) {
-      return value;
-    }
-
-    return `••••••${value.slice(-4)}`;
+      .replace(/\b\w/g, (letter) =>
+        letter.toUpperCase()
+      );
   }
 
   if (loading) {
@@ -1199,8 +822,8 @@ export default function RiderDashboard({ user, onBack }) {
             <h1>Become a Rider</h1>
 
             <p>
-              Join the UniAbuja Market delivery network and earn
-              by delivering orders to students.
+              Join the UniAbuja Market delivery network and
+              earn by delivering orders to students.
             </p>
           </div>
 
@@ -1268,7 +891,9 @@ export default function RiderDashboard({ user, onBack }) {
                   id="rider-phone"
                   type="tel"
                   value={phone}
-                  onChange={(e) => setPhone(e.target.value)}
+                  onChange={(e) =>
+                    setPhone(e.target.value)
+                  }
                   placeholder="Enter your phone number"
                   style={{
                     width: "100%",
@@ -1322,7 +947,9 @@ export default function RiderDashboard({ user, onBack }) {
                 <textarea
                   id="rider-address"
                   value={address}
-                  onChange={(e) => setAddress(e.target.value)}
+                  onChange={(e) =>
+                    setAddress(e.target.value)
+                  }
                   placeholder="Enter your current address"
                   rows="3"
                   style={{
@@ -1408,7 +1035,9 @@ export default function RiderDashboard({ user, onBack }) {
                 <select
                   id="rider-level"
                   value={level}
-                  onChange={(e) => setLevel(e.target.value)}
+                  onChange={(e) =>
+                    setLevel(e.target.value)
+                  }
                   style={{
                     width: "100%",
                     padding: "12px",
@@ -1500,7 +1129,9 @@ export default function RiderDashboard({ user, onBack }) {
 
                 <select
                   value={hasVehicle}
-                  onChange={(e) => setHasVehicle(e.target.value)}
+                  onChange={(e) =>
+                    setHasVehicle(e.target.value)
+                  }
                   style={{
                     width: "100%",
                     padding: "12px",
@@ -1597,7 +1228,8 @@ export default function RiderDashboard({ user, onBack }) {
               </p>
 
               <p>
-                <strong>Phone:</strong> {application.phone}
+                <strong>Phone:</strong>{" "}
+                {application.phone}
               </p>
 
               <p>
@@ -1621,19 +1253,21 @@ export default function RiderDashboard({ user, onBack }) {
 
               {application.status === "pending" && (
                 <p>
-                  Your application has been received. Please wait
-                  for an admin to review it.
+                  Your application has been received. Please
+                  wait for an admin to review it.
                 </p>
               )}
 
               {application.status === "approved" && (
                 <div>
-                  <p>Your application has been approved.</p>
+                  <p>
+                    Your application has been approved.
+                  </p>
 
                   <p>
-                    Your rider account is currently waiting to be
-                    activated. Please refresh your dashboard
-                    shortly.
+                    Your rider account is currently waiting
+                    to be activated. Please refresh your
+                    dashboard shortly.
                   </p>
                 </div>
               )}
@@ -1679,8 +1313,8 @@ export default function RiderDashboard({ user, onBack }) {
           <h1>Rider Dashboard</h1>
 
           <p>
-            Manage your deliveries and delivery prices for
-            different locations around UniAbuja.
+            Manage rider requests and complete deliveries
+            for UniAbuja Market orders.
           </p>
         </div>
 
@@ -1700,402 +1334,249 @@ export default function RiderDashboard({ user, onBack }) {
             {profileName || "Rider"}
           </p>
 
-          <p style={{ marginTop: "8px", opacity: 0.8 }}>
-            Manage your assigned deliveries below and set your
-            proposed delivery prices for each location.
+          <p
+            style={{
+              marginTop: "8px",
+              opacity: 0.8,
+            }}
+          >
+            When a vendor sends you a delivery request,
+            review the pickup information carefully before
+            accepting. Customer delivery details become
+            available after you accept the request.
           </p>
         </div>
 
-        {/* PAYOUT ACCOUNT */}
+        {/* DELIVERY REQUESTS */}
         <div
           className="dashboard-header"
-          style={{ marginTop: "32px" }}
+          style={{
+            marginTop: "32px",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: "16px",
+            flexWrap: "wrap",
+          }}
         >
-          <h2>Payout Account</h2>
+          <div>
+            <h2>Delivery Requests</h2>
 
-          <p>
-            Add or update the bank account where your delivery
-            earnings will be paid.
-          </p>
+            <p>
+              Vendors may send you delivery requests for
+              orders that need rider assistance.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={refreshDeliveries}
+            disabled={refreshingDeliveries}
+            style={{
+              padding: "10px 16px",
+            }}
+          >
+            {refreshingDeliveries
+              ? "Refreshing..."
+              : "↻ Refresh Requests"}
+          </button>
         </div>
 
-        <div className="dashboard-card">
-          {payoutLoading ? (
-            <p>Loading payout account...</p>
-          ) : payoutAccount && !payoutEditing ? (
-            <>
-              <div
-                style={{
-                  padding: "12px",
-                  marginBottom: "18px",
-                  borderRadius: "8px",
-                  background: "#f5f5f5",
-                }}
-              >
-                <p>
-                  <strong>Account status:</strong>{" "}
-                  {payoutAccount.is_active
-                    ? "Active"
-                    : "Inactive"}
-                </p>
+        {availableDeliveriesLoading ? (
+          <div className="dashboard-card">
+            <p>
+              Checking for delivery requests...
+            </p>
+          </div>
+        ) : availableDeliveries.length === 0 ? (
+          <div className="dashboard-card">
+            <div style={{ fontSize: "30px" }}>
+              🔎
+            </div>
 
-                <p style={{ marginTop: "6px" }}>
-                  <strong>Verification:</strong>{" "}
-                  {payoutAccount.is_verified
-                    ? "Verified"
-                    : "Pending verification"}
-                </p>
+            <h3>No delivery requests</h3>
 
-                <p style={{ marginTop: "6px" }}>
-                  <strong>Account name:</strong>{" "}
-                  {payoutAccount.account_name || "Not available"}
-                </p>
+            <p>
+              New delivery requests from vendors will
+              appear here after they send one to you.
+            </p>
+          </div>
+        ) : (
+          <div className="dashboard-grid">
+            {availableDeliveries.map((request) => {
+              const requestId =
+                request.request_id ||
+                request.delivery_id;
 
-                <p style={{ marginTop: "6px" }}>
-                  <strong>Bank:</strong>{" "}
-                  {payoutAccount.bank_name || "Bank"}
-                </p>
-
-                <p style={{ marginTop: "6px" }}>
-                  <strong>Account number:</strong>{" "}
-                  {maskAccountNumber(
-                    payoutAccount.account_number
-                  )}
-                </p>
-              </div>
-
-              <button
-                type="button"
-                onClick={startEditingPayout}
-                style={{
-                  padding: "12px 18px",
-                }}
-              >
-                Update Payout Account
-              </button>
-
-              <p
-                style={{
-                  marginTop: "14px",
-                  fontSize: "13px",
-                  opacity: 0.7,
-                }}
-              >
-                Your bank details are verified through Paystack.
-                Updating the account will require verification
-                again.
-              </p>
-            </>
-          ) : (
-            <>
-              <form onSubmit={savePayoutAccount}>
-                <div>
-                  <label
-                    htmlFor="payout-bank"
-                    style={{
-                      display: "block",
-                      marginBottom: "6px",
-                      fontWeight: "600",
-                    }}
-                  >
-                    Bank
-                  </label>
-
-                  <select
-                    id="payout-bank"
-                    value={selectedPayoutBank}
-                    onChange={(e) =>
-                      handlePayoutBankChange(e.target.value)
-                    }
-                    disabled={loadingBanks || verifyingPayout}
-                    style={{
-                      width: "100%",
-                      padding: "12px",
-                      border: "1px solid #ccc",
-                      borderRadius: "8px",
-                    }}
-                    required
-                  >
-                    <option value="">
-                      {loadingBanks
-                        ? "Loading banks..."
-                        : "Select your bank"}
-                    </option>
-
-                    {payoutBanks.map((bank) => (
-                      <option
-                        key={bank.code}
-                        value={bank.code}
-                      >
-                        {bank.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div style={{ marginTop: "14px" }}>
-                  <label
-                    htmlFor="payout-account-number"
-                    style={{
-                      display: "block",
-                      marginBottom: "6px",
-                      fontWeight: "600",
-                    }}
-                  >
-                    Account number
-                  </label>
-
-                  <input
-                    id="payout-account-number"
-                    type="text"
-                    inputMode="numeric"
-                    maxLength="10"
-                    value={payoutAccountNumber}
-                    onChange={(e) => {
-                      setPayoutAccountNumber(
-                        e.target.value.replace(/\D/g, "")
-                      );
-
-                      setPayoutAccountName("");
-                    }}
-                    placeholder="10-digit account number"
-                    style={{
-                      width: "100%",
-                      padding: "12px",
-                      border: "1px solid #ccc",
-                      borderRadius: "8px",
-                    }}
-                    required
-                  />
-                </div>
-
-                <button
-                  type="button"
-                  onClick={verifyPayoutAccount}
-                  disabled={
-                    verifyingPayout ||
-                    loadingBanks ||
-                    !selectedPayoutBank ||
-                    payoutAccountNumber.length !== 10
-                  }
-                  style={{
-                    marginTop: "16px",
-                    padding: "12px 18px",
-                  }}
+              return (
+                <div
+                  key={requestId}
+                  className="dashboard-card"
                 >
-                  {verifyingPayout
-                    ? "Verifying..."
-                    : "Verify Account"}
-                </button>
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      gap: "12px",
+                    }}
+                  >
+                    <div>
+                      <span
+                        style={{
+                          fontSize: "24px",
+                        }}
+                      >
+                        📦
+                      </span>
 
-                {payoutAccountName && (
+                      <h3>
+                        Delivery #
+                        {String(
+                          request.delivery_id
+                        ).slice(0, 8)}
+                      </h3>
+                    </div>
+
+                    <span className="order-status status-pending">
+                      Request
+                    </span>
+                  </div>
+
+                  <p
+                    style={{
+                      marginTop: "12px",
+                    }}
+                  >
+                    <strong>Pickup location:</strong>{" "}
+                    {request.pickup_store_name ||
+                      "Vendor store"}
+                  </p>
+
+                  <p
+                    style={{
+                      marginTop: "8px",
+                    }}
+                  >
+                    <strong>Address:</strong>{" "}
+                    {request.pickup_location ||
+                      "Pickup location not provided"}
+                  </p>
+
+                  <p
+                    style={{
+                      marginTop: "8px",
+                      opacity: 0.75,
+                    }}
+                  >
+                    Request received:{" "}
+                    {request.created_at
+                      ? new Date(
+                          request.created_at
+                        ).toLocaleString()
+                      : "Recently"}
+                  </p>
+
                   <div
                     style={{
                       marginTop: "16px",
-                      padding: "12px",
+                      padding: "14px",
                       borderRadius: "8px",
                       background: "#f5f5f5",
                     }}
                   >
                     <p>
-                      <strong>Account name:</strong>{" "}
-                      {payoutAccountName}
+                      <strong>
+                        Review before accepting
+                      </strong>
                     </p>
 
                     <p
                       style={{
-                        marginTop: "6px",
-                        color: "green",
+                        marginTop: "8px",
                       }}
                     >
-                      ✓ Account verified
+                      Check the pickup information
+                      carefully before accepting this
+                      request.
+                    </p>
+
+                    <p
+                      style={{
+                        marginTop: "8px",
+                      }}
+                    >
+                      Customer delivery address and phone
+                      number will become available only
+                      after you accept the request.
                     </p>
                   </div>
-                )}
 
-                <button
-                  type="submit"
-                  disabled={
-                    savingPayout ||
-                    !payoutAccountName ||
-                    verifyingPayout
-                  }
-                  style={{
-                    marginTop: "20px",
-                    padding: "12px 18px",
-                  }}
-                >
-                  {savingPayout
-                    ? "Saving..."
-                    : payoutAccount
-                    ? "Save Updated Account"
-                    : "Save Payout Account"}
-                </button>
-
-                {payoutEditing && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setPayoutEditing(false);
-                      setPayoutAccountName(
-                        payoutAccount?.account_name || ""
-                      );
-                      setPayoutBankName(
-                        payoutAccount?.bank_name || ""
-                      );
-                      setPayoutBankCode(
-                        payoutAccount?.bank_code || ""
-                      );
-                      setSelectedPayoutBank(
-                        payoutAccount?.bank_code || ""
-                      );
-                      setPayoutAccountNumber(
-                        payoutAccount?.account_number || ""
-                      );
-                      setMessage("");
-                    }}
+                  <div
                     style={{
-                      marginTop: "10px",
-                      marginLeft: "8px",
-                      padding: "12px 18px",
+                      display: "flex",
+                      gap: "8px",
+                      marginTop: "16px",
                     }}
                   >
-                    Cancel
-                  </button>
-                )}
-              </form>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        acceptDelivery(requestId)
+                      }
+                      disabled={
+                        deliveryAction ===
+                          `accept-${requestId}` ||
+                        deliveryAction !== null
+                      }
+                      style={{
+                        padding: "12px 18px",
+                        flex: 1,
+                      }}
+                    >
+                      {deliveryAction ===
+                      `accept-${requestId}`
+                        ? "Accepting..."
+                        : "Accept"}
+                    </button>
 
-              <p
-                style={{
-                  marginTop: "14px",
-                  fontSize: "13px",
-                  opacity: 0.7,
-                }}
-              >
-                Select your bank and enter your 10-digit account
-                number. Paystack will verify the account and
-                return the account name automatically.
-              </p>
-            </>
-          )}
-        </div>
-
-        {/* AVAILABLE DELIVERIES */}
-        <div
-          className="dashboard-header"
-          style={{ marginTop: "32px" }}
-        >
-          <h2>Available Deliveries</h2>
-
-          <p>
-            Paid delivery orders available for riders in your
-            approved delivery areas.
-          </p>
-        </div>
-
-        {availableDeliveriesLoading ? (
-          <div className="dashboard-card">
-            <p>Checking for available deliveries...</p>
-          </div>
-        ) : availableDeliveries.length === 0 ? (
-          <div className="dashboard-card">
-            <div style={{ fontSize: "30px" }}>🔎</div>
-
-            <h3>No available deliveries</h3>
-
-            <p>
-              New paid rider deliveries that match your approved
-              delivery areas will appear here automatically.
-            </p>
-          </div>
-        ) : (
-          <div className="dashboard-grid">
-            {availableDeliveries.map((delivery) => (
-              <div
-                key={delivery.delivery_id}
-                className="dashboard-card"
-              >
-                <div
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                    gap: "12px",
-                  }}
-                >
-                  <div>
-                    <span style={{ fontSize: "24px" }}>
-                      📦
-                    </span>
-
-                    <h3>
-                      Delivery #
-                      {String(delivery.delivery_id).slice(0, 8)}
-                    </h3>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        rejectDelivery(requestId)
+                      }
+                      disabled={
+                        deliveryAction ===
+                          `reject-${requestId}` ||
+                        deliveryAction !== null
+                      }
+                      style={{
+                        padding: "12px 18px",
+                        flex: 1,
+                      }}
+                    >
+                      {deliveryAction ===
+                      `reject-${requestId}`
+                        ? "Rejecting..."
+                        : "Reject"}
+                    </button>
                   </div>
-
-                  <span className="order-status status-pending">
-                    Available
-                  </span>
                 </div>
-
-                <p style={{ marginTop: "12px" }}>
-                  <strong>Pickup location:</strong>{" "}
-                  {delivery.pickup_store_name ||
-                    "Vendor store"}
-                </p>
-
-                <p style={{ marginTop: "8px" }}>
-                  <strong>Address:</strong>{" "}
-                  {delivery.pickup_location ||
-                    "Pickup location not provided"}
-                </p>
-
-                <p style={{ marginTop: "8px" }}>
-                  <strong>Delivery fee:</strong>{" "}
-                  {formatNaira(delivery.delivery_fee)}
-                </p>
-
-                <p style={{ marginTop: "8px", opacity: 0.75 }}>
-                  Posted:{" "}
-                  {delivery.created_at
-                    ? new Date(
-                        delivery.created_at
-                      ).toLocaleString()
-                    : "Recently"}
-                </p>
-
-                <button
-                  type="button"
-                  onClick={() =>
-                    claimDelivery(delivery.delivery_id)
-                  }
-                  disabled={
-                    claimingDelivery === delivery.delivery_id
-                  }
-                  style={{
-                    marginTop: "16px",
-                    padding: "12px 18px",
-                    width: "100%",
-                  }}
-                >
-                  {claimingDelivery === delivery.delivery_id
-                    ? "Claiming..."
-                    : "Claim Delivery"}
-                </button>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
 
-        {/* ASSIGNED DELIVERIES */}
+        {/* MY DELIVERIES */}
         <div
           className="dashboard-header"
           style={{ marginTop: "32px" }}
         >
           <h2>My Deliveries</h2>
 
-          <p>Orders assigned to you for delivery.</p>
+          <p>
+            Deliveries you have accepted from vendors.
+          </p>
         </div>
 
         {deliveriesLoading ? (
@@ -2104,21 +1585,25 @@ export default function RiderDashboard({ user, onBack }) {
           </div>
         ) : deliveries.length === 0 ? (
           <div className="dashboard-card">
-            <div style={{ fontSize: "30px" }}>📦</div>
+            <div style={{ fontSize: "30px" }}>
+              📦
+            </div>
 
-            <h3>No assigned deliveries</h3>
+            <h3>No accepted deliveries</h3>
 
             <p>
-              Deliveries assigned to you will appear here.
+              Deliveries you accept will appear here.
             </p>
           </div>
         ) : (
           <div className="dashboard-grid">
             {deliveries.map((delivery) => {
-              const details = deliveryDetails[delivery.id];
+              const details =
+                deliveryDetails[delivery.id];
 
-              const pickupPinReady =
-                delivery.status === "ready_for_pickup";
+              const customerDetailsAvailable =
+                delivery.rider_request_status ===
+                "accepted";
 
               return (
                 <div
@@ -2134,12 +1619,17 @@ export default function RiderDashboard({ user, onBack }) {
                     }}
                   >
                     <div>
-                      <span style={{ fontSize: "24px" }}>
+                      <span
+                        style={{
+                          fontSize: "24px",
+                        }}
+                      >
                         🚴
                       </span>
 
                       <h3>
-                        Delivery #{delivery.id.slice(0, 8)}
+                        Delivery #
+                        {delivery.id.slice(0, 8)}
                       </h3>
                     </div>
 
@@ -2152,14 +1642,8 @@ export default function RiderDashboard({ user, onBack }) {
                     </span>
                   </div>
 
-                  <p style={{ marginTop: "12px" }}>
-                    <strong>Delivery fee:</strong>{" "}
-                    {formatNaira(delivery.delivery_fee)}
-                  </p>
-
-                  {/* VENDOR PICKUP INFORMATION + PICKUP PIN */}
-                  {(delivery.status === "assigned" ||
-                    delivery.status === "ready_for_pickup") && (
+                  {/* ACCEPTED / WAITING FOR ORDER */}
+                  {delivery.status === "pending" && (
                     <div
                       style={{
                         marginTop: "16px",
@@ -2169,194 +1653,103 @@ export default function RiderDashboard({ user, onBack }) {
                       }}
                     >
                       <p>
-                        <strong>Vendor pickup details</strong>
+                        <strong>
+                          Delivery accepted.
+                        </strong>
                       </p>
 
-                      <p style={{ marginTop: "8px" }}>
-                        <strong>Store:</strong>{" "}
-                        {details?.pickup_store_name ||
-                          "Loading store..."}
+                      <p
+                        style={{
+                          marginTop: "8px",
+                        }}
+                      >
+                        The order is still waiting to
+                        move forward.
+                      </p>
+                    </div>
+                  )}
+
+                  {/* ORDER ACCEPTED */}
+                  {delivery.status === "accepted" && (
+                    <div
+                      style={{
+                        marginTop: "16px",
+                        padding: "14px",
+                        borderRadius: "8px",
+                        background: "#f5f5f5",
+                      }}
+                    >
+                      <p>
+                        <strong>
+                          Order accepted.
+                        </strong>
                       </p>
 
-                      <p style={{ marginTop: "8px" }}>
-                        <strong>Pickup address:</strong>{" "}
-                        {details?.pickup_location ||
-                          "Loading pickup address..."}
+                      <p
+                        style={{
+                          marginTop: "8px",
+                        }}
+                      >
+                        The vendor will prepare the
+                        order before marking it ready.
+                      </p>
+                    </div>
+                  )}
+
+                  {/* PROCESSING */}
+                  {delivery.status === "processing" && (
+                    <div
+                      style={{
+                        marginTop: "16px",
+                        padding: "14px",
+                        borderRadius: "8px",
+                        background: "#f5f5f5",
+                      }}
+                    >
+                      <p>
+                        <strong>
+                          Vendor is preparing the order.
+                        </strong>
                       </p>
 
-                      {delivery.status === "assigned" && (
-                        <>
-                          <p
-                            style={{
-                              marginTop: "10px",
-                              opacity: 0.8,
-                            }}
-                          >
-                            Your delivery has been assigned.
-                            Go to the vendor's pickup location.
-                          </p>
+                      <p
+                        style={{
+                          marginTop: "8px",
+                        }}
+                      >
+                        Wait for the vendor to mark the
+                        order ready before going to
+                        collect it.
+                      </p>
 
-                          <div
-                            style={{
-                              marginTop: "16px",
-                              padding: "12px",
-                              borderRadius: "8px",
-                              background: "#fff",
-                              border: "1px solid #ddd",
-                            }}
-                          >
-                            <p>
-                              <strong>Pickup PIN</strong>
-                            </p>
-
-                            <p
-                              style={{
-                                marginTop: "6px",
-                                fontSize: "13px",
-                                opacity: 0.75,
-                              }}
-                            >
-                              The vendor will give you the
-                              4-digit pickup PIN when the order
-                              is ready.
-                            </p>
-
-                            <input
-                              type="text"
-                              inputMode="numeric"
-                              maxLength="4"
-                              value={
-                                pickupCodes[delivery.id] || ""
-                              }
-                              onChange={(e) =>
-                                setPickupCodes((current) => ({
-                                  ...current,
-                                  [delivery.id]: e.target.value
-                                    .replace(/\D/g, "")
-                                    .slice(0, 4),
-                                }))
-                              }
-                              placeholder="Enter pickup PIN"
-                              style={{
-                                width: "100%",
-                                marginTop: "12px",
-                                padding: "12px",
-                                border: "1px solid #ccc",
-                                borderRadius: "8px",
-                                letterSpacing: "4px",
-                                textAlign: "center",
-                                fontSize: "18px",
-                              }}
-                            />
-
-                            <button
-                              type="button"
-                              onClick={() =>
-                                confirmPickup(delivery)
-                              }
-                              disabled={
-                                !pickupPinReady ||
-                                deliveryAction ===
-                                  `pickup-${delivery.id}`
-                              }
-                              style={{
-                                marginTop: "12px",
-                                padding: "12px 18px",
-                                width: "100%",
-                              }}
-                            >
-                              {deliveryAction ===
-                              `pickup-${delivery.id}`
-                                ? "Confirming..."
-                                : "Confirm Pickup"}
-                            </button>
-
-                            {!pickupPinReady && (
-                              <p
-                                style={{
-                                  marginTop: "8px",
-                                  fontSize: "12px",
-                                  opacity: 0.7,
-                                  textAlign: "center",
-                                }}
-                              >
-                                Waiting for the vendor to mark
-                                the order ready for pickup.
-                              </p>
-                            )}
-                          </div>
-                        </>
+                      {details?.pickup_location && (
+                        <p
+                          style={{
+                            marginTop: "10px",
+                          }}
+                        >
+                          <strong>
+                            Pickup location:
+                          </strong>{" "}
+                          {details.pickup_location}
+                        </p>
                       )}
 
-                      {delivery.status === "ready_for_pickup" && (
-                        <>
-                          <p style={{ marginTop: "10px" }}>
-                            The order is ready. Go to the vendor's
-                            pickup location and collect it.
-                          </p>
-
-                          <p style={{ marginTop: "8px" }}>
-                            <strong>
-                              Ask the vendor for the 4-digit
-                              pickup PIN.
-                            </strong>
-                          </p>
-
-                          <input
-                            type="text"
-                            inputMode="numeric"
-                            maxLength="4"
-                            value={
-                              pickupCodes[delivery.id] || ""
-                            }
-                            onChange={(e) =>
-                              setPickupCodes((current) => ({
-                                ...current,
-                                [delivery.id]: e.target.value
-                                  .replace(/\D/g, "")
-                                  .slice(0, 4),
-                              }))
-                            }
-                            placeholder="Enter pickup PIN"
-                            style={{
-                              width: "100%",
-                              marginTop: "12px",
-                              padding: "12px",
-                              border: "1px solid #ccc",
-                              borderRadius: "8px",
-                              letterSpacing: "4px",
-                              textAlign: "center",
-                              fontSize: "18px",
-                            }}
-                          />
-
-                          <button
-                            type="button"
-                            onClick={() =>
-                              confirmPickup(delivery)
-                            }
-                            disabled={
-                              deliveryAction ===
-                              `pickup-${delivery.id}`
-                            }
-                            style={{
-                              marginTop: "12px",
-                              padding: "12px 18px",
-                              width: "100%",
-                            }}
-                          >
-                            {deliveryAction ===
-                            `pickup-${delivery.id}`
-                              ? "Confirming..."
-                              : "Confirm Pickup"}
-                          </button>
-                        </>
+                      {details?.pickup_store_name && (
+                        <p
+                          style={{
+                            marginTop: "8px",
+                          }}
+                        >
+                          <strong>Store:</strong>{" "}
+                          {details.pickup_store_name}
+                        </p>
                       )}
                     </div>
                   )}
 
-                  {/* PICKED UP */}
-                  {delivery.status === "picked_up" && (
+                  {/* READY */}
+                  {delivery.status === "ready" && (
                     <div
                       style={{
                         marginTop: "16px",
@@ -2366,19 +1759,93 @@ export default function RiderDashboard({ user, onBack }) {
                       }}
                     >
                       <p>
-                        <strong>Customer delivery details</strong>
+                        <strong>
+                          The order is ready.
+                        </strong>
                       </p>
 
-                      <p style={{ marginTop: "8px" }}>
-                        <strong>Address:</strong>{" "}
-                        {details?.delivery_address ||
-                          "Loading address..."}
+                      <p
+                        style={{
+                          marginTop: "8px",
+                        }}
+                      >
+                        Go to the vendor's pickup
+                        location and collect the order.
                       </p>
 
-                      <p style={{ marginTop: "8px" }}>
-                        <strong>Phone:</strong>{" "}
-                        {details?.customer_phone ||
-                          "Loading phone..."}
+                      <p
+                        style={{
+                          marginTop: "10px",
+                        }}
+                      >
+                        <strong>
+                          Pickup location:
+                        </strong>{" "}
+                        {details?.pickup_location ||
+                          details?.pickup_address ||
+                          "Loading pickup location..."}
+                      </p>
+
+                      {details?.pickup_store_name && (
+                        <p
+                          style={{
+                            marginTop: "8px",
+                          }}
+                        >
+                          <strong>Store:</strong>{" "}
+                          {details.pickup_store_name}
+                        </p>
+                      )}
+
+                      {customerDetailsAvailable && (
+                        <div
+                          style={{
+                            marginTop: "14px",
+                            paddingTop: "14px",
+                            borderTop:
+                              "1px solid #ddd",
+                          }}
+                        >
+                          <p>
+                            <strong>
+                              Customer delivery details
+                            </strong>
+                          </p>
+
+                          <p
+                            style={{
+                              marginTop: "8px",
+                            }}
+                          >
+                            <strong>
+                              Address:
+                            </strong>{" "}
+                            {details?.delivery_address ||
+                              "Loading address..."}
+                          </p>
+
+                          <p
+                            style={{
+                              marginTop: "8px",
+                            }}
+                          >
+                            <strong>
+                              Phone:
+                            </strong>{" "}
+                            {details?.customer_phone ||
+                              "Loading phone..."}
+                          </p>
+                        </div>
+                      )}
+
+                      <p
+                        style={{
+                          marginTop: "12px",
+                        }}
+                      >
+                        Once you have collected the
+                        order from the vendor, tap
+                        <strong> Start Delivery</strong>.
                       </p>
 
                       <button
@@ -2405,7 +1872,8 @@ export default function RiderDashboard({ user, onBack }) {
                   )}
 
                   {/* OUT FOR DELIVERY */}
-                  {delivery.status === "out_for_delivery" && (
+                  {delivery.status ===
+                    "out_for_delivery" && (
                     <div
                       style={{
                         marginTop: "16px",
@@ -2415,45 +1883,68 @@ export default function RiderDashboard({ user, onBack }) {
                       }}
                     >
                       <p>
-                        <strong>Customer delivery details</strong>
+                        <strong>
+                          Customer delivery details
+                        </strong>
                       </p>
 
-                      <p style={{ marginTop: "8px" }}>
+                      <p
+                        style={{
+                          marginTop: "8px",
+                        }}
+                      >
                         <strong>Address:</strong>{" "}
                         {details?.delivery_address ||
                           "Loading address..."}
                       </p>
 
-                      <p style={{ marginTop: "8px" }}>
+                      <p
+                        style={{
+                          marginTop: "8px",
+                        }}
+                      >
                         <strong>Phone:</strong>{" "}
                         {details?.customer_phone ||
                           "Loading phone..."}
                       </p>
 
-                      <p style={{ marginTop: "12px" }}>
-                        Ask the customer for the 4-digit delivery
-                        PIN shown in their My Orders page.
+                      <p
+                        style={{
+                          marginTop: "12px",
+                        }}
+                      >
+                        Ask the customer for the 4-digit
+                        completion PIN shown in their
+                        My Orders page.
                       </p>
 
                       <input
                         type="text"
                         inputMode="numeric"
                         maxLength="4"
-                        value={deliveryCodes[delivery.id] || ""}
+                        value={
+                          deliveryCodes[
+                            delivery.id
+                          ] || ""
+                        }
                         onChange={(e) =>
-                          setDeliveryCodes((current) => ({
-                            ...current,
-                            [delivery.id]: e.target.value
-                              .replace(/\D/g, "")
-                              .slice(0, 4),
-                          }))
+                          setDeliveryCodes(
+                            (current) => ({
+                              ...current,
+                              [delivery.id]:
+                                e.target.value
+                                  .replace(/\D/g, "")
+                                  .slice(0, 4),
+                            })
+                          )
                         }
                         placeholder="Enter customer PIN"
                         style={{
                           width: "100%",
                           marginTop: "12px",
                           padding: "12px",
-                          border: "1px solid #ccc",
+                          border:
+                            "1px solid #ccc",
                           borderRadius: "8px",
                           letterSpacing: "4px",
                           textAlign: "center",
@@ -2495,7 +1986,9 @@ export default function RiderDashboard({ user, onBack }) {
                       }}
                     >
                       <p>
-                        <strong>✓ Delivery completed</strong>
+                        <strong>
+                          ✓ Delivery completed
+                        </strong>
                       </p>
 
                       {delivery.delivered_at && (
@@ -2514,22 +2007,56 @@ export default function RiderDashboard({ user, onBack }) {
                     </div>
                   )}
 
+                  {/* CANCELLED */}
+                  {delivery.status === "cancelled" && (
+                    <div
+                      style={{
+                        marginTop: "16px",
+                        padding: "14px",
+                        borderRadius: "8px",
+                        background: "#f5f5f5",
+                      }}
+                    >
+                      <p>
+                        <strong>
+                          Delivery cancelled
+                        </strong>
+                      </p>
+
+                      <p
+                        style={{
+                          marginTop: "8px",
+                        }}
+                      >
+                        This delivery is no longer active.
+                      </p>
+                    </div>
+                  )}
+
                   <p
                     style={{
                       marginTop: "12px",
                       opacity: 0.75,
                     }}
                   >
-                    Assigned:{" "}
-                    {new Date(
-                      delivery.created_at
-                    ).toLocaleString()}
+                    Accepted:{" "}
+                    {delivery.created_at
+                      ? new Date(
+                          delivery.created_at
+                        ).toLocaleString()
+                      : "Recently"}
                   </p>
 
-                  <div style={{ marginTop: "16px" }}>
+                  <div
+                    style={{
+                      marginTop: "16px",
+                    }}
+                  >
                     <OrderChat
                       user={user}
-                      vendorOrderId={delivery.vendor_order_id}
+                      vendorOrderId={
+                        delivery.vendor_order_id
+                      }
                       title="Chat about this delivery"
                     />
                   </div>
@@ -2537,133 +2064,6 @@ export default function RiderDashboard({ user, onBack }) {
               );
             })}
           </div>
-        )}
-
-        {zones.length === 0 ? (
-          <div
-            className="dashboard-card"
-            style={{ marginTop: "24px" }}
-          >
-            <h3>No delivery zones available</h3>
-
-            <p>
-              There are currently no active delivery zones.
-              Please check again later.
-            </p>
-          </div>
-        ) : (
-          <>
-            <div
-              className="dashboard-header"
-              style={{ marginTop: "32px" }}
-            >
-              <h2>Delivery Areas & Prices</h2>
-
-              <p>
-                Submit the amount you propose for each delivery
-                location. Admin approval is required before a
-                zone price becomes active.
-              </p>
-            </div>
-
-            <div className="dashboard-grid">
-              {zones.map((zone) => {
-                const rate = existingRates[zone.id];
-
-                const approved =
-                  rate &&
-                  rate.approval_status === "approved" &&
-                  rate.approved_fee !== null &&
-                  rate.is_active;
-
-                return (
-                  <div
-                    key={zone.id}
-                    className="dashboard-card"
-                  >
-                    <span style={{ fontSize: "24px" }}>
-                      📍
-                    </span>
-
-                    <h3>{zone.name}</h3>
-
-                    {approved ? (
-                      <div>
-                        <p>
-                          <strong>Active price:</strong>{" "}
-                          {formatNaira(rate.approved_fee)}
-                        </p>
-
-                        <p style={{ marginTop: "6px" }}>
-                          Status:{" "}
-                          <strong>Approved</strong>
-                        </p>
-                      </div>
-                    ) : rate ? (
-                      <div>
-                        <p>
-                          <strong>Proposed:</strong>{" "}
-                          {formatNaira(rate.proposed_fee)}
-                        </p>
-
-                        <p style={{ marginTop: "6px" }}>
-                          Status:{" "}
-                          <strong>
-                            {rate.approval_status === "pending"
-                              ? "Pending admin approval"
-                              : rate.approval_status}
-                          </strong>
-                        </p>
-                      </div>
-                    ) : (
-                      <p>
-                        No price submitted for this location
-                        yet.
-                      </p>
-                    )}
-
-                    <div
-                      style={{
-                        display: "flex",
-                        gap: "8px",
-                        marginTop: "12px",
-                      }}
-                    >
-                      <input
-                        type="number"
-                        min="0"
-                        step="50"
-                        value={fees[zone.id] ?? ""}
-                        onChange={(e) =>
-                          handleFeeChange(
-                            zone.id,
-                            e.target.value
-                          )
-                        }
-                        placeholder="Proposed fee"
-                        style={{
-                          width: "130px",
-                          padding: "10px",
-                          border: "1px solid #ccc",
-                          borderRadius: "8px",
-                        }}
-                      />
-
-                      <button
-                        type="button"
-                        onClick={() => saveFee(zone.id)}
-                        disabled={savingZone === zone.id}
-                      >
-                        {savingZone === zone.id
-                          ? "Saving..."
-                          : "Submit"}
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </>
         )}
       </div>
     </div>
