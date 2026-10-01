@@ -126,6 +126,8 @@ function App() {
     setStore(data)
   }
 
+  const isActiveStore = user && store?.status === 'active'
+
   const handleLogout = async () => {
     await supabase.auth.signOut()
 
@@ -599,15 +601,27 @@ function App() {
               <span>🏪</span>
 
               <h3>
-                {store
-                  ? 'My Store'
-                  : 'Become a Vendor'}
+                {!store
+                  ? 'Become a Vendor'
+                  : store.status === 'pending'
+                    ? 'Application Pending'
+                    : store.status === 'active'
+                      ? 'My Store'
+                      : store.status === 'rejected'
+                        ? 'Application Not Approved'
+                        : 'Store Unavailable'}
               </h3>
 
               <p>
-                {store
-                  ? 'Manage your UniAbuja Market store.'
-                  : 'Create your store and start selling.'}
+                {!store
+                  ? 'Create your store and apply to start selling.'
+                  : store.status === 'pending'
+                    ? 'Your vendor application is waiting for admin approval.'
+                    : store.status === 'active'
+                      ? 'Manage your UniAbuja Market store.'
+                      : store.status === 'rejected'
+                        ? 'Your vendor application was not approved.'
+                        : 'Your store is currently unavailable.'}
               </p>
 
               <button
@@ -616,16 +630,20 @@ function App() {
                   setShowStore(true)
                 }
               >
-                {store
-                  ? 'Manage Store'
-                  : 'Create Store'}
+                {!store
+                  ? 'Create Store'
+                  : store.status === 'pending'
+                    ? 'View Application'
+                    : store.status === 'active'
+                      ? 'Manage Store'
+                      : 'View Store'}
               </button>
 
             </div>
           )}
 
           {/* ADD PRODUCT */}
-          {user && store && (
+          {isActiveStore && (
             <div className="dashboard-card">
 
               <span>➕</span>
@@ -652,7 +670,7 @@ function App() {
           )}
 
           {/* MY PRODUCTS */}
-          {user && store && (
+          {isActiveStore && (
             <div className="dashboard-card">
 
               <span>📦</span>
@@ -706,7 +724,7 @@ function App() {
           )}
 
           {/* VENDOR ORDERS */}
-          {user && store && (
+          {isActiveStore && (
             <div className="dashboard-card">
 
               <span>📋</span>
@@ -733,7 +751,7 @@ function App() {
           )}
 
           {/* VENDOR EARNINGS & PAYOUT */}
-          {user && store && (
+          {isActiveStore && (
             <div className="dashboard-card">
 
               <span>💰</span>
