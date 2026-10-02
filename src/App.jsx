@@ -40,6 +40,28 @@ function App() {
   const [isAdmin, setIsAdmin] = useState(false)
   const [loading, setLoading] = useState(true)
 
+  const [vendorSubscription, setVendorSubscription] =
+    useState(null)
+
+  const [subscriptionLoading, setSubscriptionLoading] =
+    useState(false)
+
+  const loadStore = async (userId) => {
+    const { data, error } = await supabase
+      .from('stores')
+      .select('*')
+      .eq('owner_id', userId)
+      .maybeSingle()
+
+    if (error) {
+      console.error('Store loading error:', error)
+      setStore(null)
+      return
+    }
+
+    setStore(data)
+  }
+
   useEffect(() => {
     let mounted = true
 
@@ -63,6 +85,58 @@ function App() {
       }
     }
 
+    const loadVendorSubscription = async (userId) => {
+      if (!userId) {
+        if (mounted) {
+          setVendorSubscription(null)
+          setSubscriptionLoading(false)
+        }
+
+        return
+      }
+
+      setSubscriptionLoading(true)
+
+      const { data, error } = await supabase
+        .from('vendor_subscriptions')
+        .select(
+          `
+            id,
+            vendor_id,
+            status,
+            trial_started_at,
+            trial_ends_at,
+            current_period_start,
+            current_period_end,
+            grace_period_ends_at,
+            monthly_price,
+            paystack_customer_code,
+            paystack_subscription_code
+          `
+        )
+        .eq('vendor_id', userId)
+        .maybeSingle()
+
+      if (error) {
+        console.error(
+          'Vendor subscription loading error:',
+          error
+        )
+
+        if (mounted) {
+          setVendorSubscription(null)
+          setSubscriptionLoading(false)
+        }
+
+        return
+      }
+
+      if (mounted) {
+        setVendorSubscription(data)
+        setSubscriptionLoading(false)
+      }
+    }
+
     const loadSession = async () => {
       const {
         data: { session },
@@ -74,12 +148,18 @@ function App() {
 
       if (session?.user) {
         await loadStore(session.user.id)
+        await loadVendorSubscription(session.user.id)
         await checkAdmin()
       } else {
+        setStore(null)
+        setVendorSubscription(null)
         setIsAdmin(false)
+        setSubscriptionLoading(false)
       }
 
-      setLoading(false)
+      if (mounted) {
+        setLoading(false)
+      }
     }
 
     loadSession()
@@ -94,13 +174,18 @@ function App() {
 
         if (session?.user) {
           await loadStore(session.user.id)
+          await loadVendorSubscription(session.user.id)
           await checkAdmin()
         } else {
           setStore(null)
+          setVendorSubscription(null)
           setIsAdmin(false)
+          setSubscriptionLoading(false)
         }
 
-        setLoading(false)
+        if (mounted) {
+          setLoading(false)
+        }
       }
     )
 
@@ -110,29 +195,192 @@ function App() {
     }
   }, [])
 
-  const loadStore = async (userId) => {
-    const { data, error } = await supabase
-      .from('stores')
-      .select('*')
-      .eq('owner_id', userId)
-      .maybeSingle()
+  const isActiveStore =
+    user && store?.status === 'active'
 
-    if (error) {
-      console.error('Store loading error:', error)
-      setStore(null)
+  const isTrialStillActive = () => {
+    if (
+      !vendorSubscription ||
+      vendorSubscription.status !== 'trialing' ||
+      !vendorSubscription.trial_ends_at
+    ) {
+      return false
+    }
+
+    const trialEnds = new Date(
+      vendorSubscription.trial_ends_at
+    )
+
+    if (Number.isNaN(trialEnds.getTime())) {
+      return false
+    }
+
+    return trialEnds.getTime() > Date.now()
+  }
+
+  const handleVendorSubscriptionPayment = async () => {
+    if (!user) {
+      setShowAuth(true)
       return
     }
 
-    setStore(data)
+    if (!vendorSubscription) {
+      alert(
+        'No vendor subscription was found for this account.'
+      )
+      return
+    }
+
+    if (isTrialStillActive()) {
+      const trialEnds = new Date(
+        vendorSubscription.trial_ends_at
+      )
+
+      alert(
+        `Your free trial is still active until ${trialEnds.toLocaleDateString(
+          undefined,
+          {
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric',
+          }
+        )}.`
+      )
+
+      return
+    }
+
+    if (vendorSubscription.status === 'active') {
+      alert(
+        'Your vendor subscription is already active.'
+      )
+      return
+    }
+
+    setSubscriptionLoading(true)
+
+    try {
+      const {
+        data: { session },
+        error: sessionError,
+      } = await supabase.auth.getSession()
+
+      if (
+        sessionError ||
+        !session ||
+        !session.access_token
+      ) {
+        throw new Error(
+          'Your login session has expired. Please log in again.'
+        )
+      }
+
+      const response = await fetch(
+        '/api/vendor-subscription/initialize',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization:
+              `Bearer ${session.access_token}`,
+          },
+        }
+      )
+
+      let result = null
+
+      try {
+        result = await response.json()
+      } catch {
+        result = null
+      }
+
+      if (!response.ok || !result?.success) {
+        throw new Error(
+          result?.message ||
+            'Unable to initialize subscription payment.'
+        )
+      }
+
+      if (!result.authorization_url) {
+        throw new Error(
+          'Paystack authorization URL was not returned.'
+        )
+      }
+
+      window.location.href =
+        result.authorization_url
+    } catch (error) {
+      console.error(
+        'Subscription payment error:',
+        error
+      )
+
+      alert(
+        error?.message ||
+          'Unable to start subscription payment.'
+      )
+
+      setSubscriptionLoading(false)
+    }
   }
 
-  const isActiveStore = user && store?.status === 'active'
+  const formatSubscriptionDate = (value) => {
+    if (!value) return 'Not available'
+
+    const date = new Date(value)
+
+    if (Number.isNaN(date.getTime())) {
+      return 'Not available'
+    }
+
+    return date.toLocaleDateString(
+      undefined,
+      {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+      }
+    )
+  }
+
+  const getSubscriptionStatusText = () => {
+    if (!vendorSubscription) {
+      return 'Subscription information unavailable.'
+    }
+
+    switch (vendorSubscription.status) {
+      case 'trialing':
+        return isTrialStillActive()
+          ? 'Free trial active'
+          : 'Free trial ended'
+
+      case 'active':
+        return 'Subscription active'
+
+      case 'past_due':
+        return 'Payment is past due'
+
+      case 'grace_period':
+        return 'Grace period active'
+
+      case 'expired':
+        return 'Subscription expired'
+
+      case 'cancelled':
+        return 'Subscription cancelled'
+
+      default:
+        return vendorSubscription.status
+    }
+  }
 
   const handleLogout = async () => {
     await supabase.auth.signOut()
 
     setUser(null)
     setStore(null)
+    setVendorSubscription(null)
     setIsAdmin(false)
 
     setShowAuth(false)
@@ -187,11 +435,6 @@ function App() {
         onBack={() => {
           setShowAuth(false)
 
-          /*
-           * If the user was trying to access
-           * the Rider Dashboard, cancel that
-           * pending navigation when they go back.
-           */
           if (!user) {
             setShowRiderDashboard(false)
           }
@@ -199,11 +442,6 @@ function App() {
         onLogin={() => {
           setShowAuth(false)
 
-          /*
-           * If the user came here by clicking
-           * Apply as a Rider, keep the Rider
-           * Dashboard open after login.
-           */
           if (showRiderDashboard) {
             setShowRiderDashboard(true)
           }
@@ -229,11 +467,6 @@ function App() {
    */
   if (showRiderDashboard) {
     if (!user) {
-      /*
-       * This normally won't be reached because
-       * the public Apply as Rider button opens Auth.
-       * It is kept as a safety check.
-       */
       setShowAuth(true)
 
       return null
@@ -427,7 +660,9 @@ function App() {
             <button
               type="button"
               className="back-button"
-              onClick={() => setShowAuth(true)}
+              onClick={() =>
+                setShowAuth(true)
+              }
             >
               Login
             </button>
@@ -537,27 +772,12 @@ function App() {
             <button
               type="button"
               onClick={() => {
-
                 if (user) {
-
-                  /*
-                   * Already logged in:
-                   * open Rider Dashboard directly.
-                   */
                   setShowRiderDashboard(true)
-
                 } else {
-
-                  /*
-                   * Not logged in:
-                   * remember that the user wants
-                   * the Rider Dashboard, then open Auth.
-                   */
                   setShowRiderDashboard(true)
                   setShowAuth(true)
-
                 }
-
               }}
             >
               {user
@@ -641,6 +861,167 @@ function App() {
 
             </div>
           )}
+
+          {/* VENDOR SUBSCRIPTION */}
+          {user &&
+            store?.status === 'active' &&
+            vendorSubscription && (
+              <div className="dashboard-card">
+
+                <span>💳</span>
+
+                <h3>
+                  Vendor Subscription
+                </h3>
+
+                <p>
+                  {getSubscriptionStatusText()}
+                </p>
+
+                <p>
+                  ₦
+                  {Number(
+                    vendorSubscription.monthly_price ||
+                      3999
+                  ).toLocaleString()}
+                  /month
+                </p>
+
+                {/* TRIAL */}
+                {vendorSubscription.status ===
+                  'trialing' && (
+                  <>
+                    <p>
+                      Trial ends:{' '}
+                      {formatSubscriptionDate(
+                        vendorSubscription.trial_ends_at
+                      )}
+                    </p>
+
+                    {isTrialStillActive() ? (
+                      <p>
+                        You can continue selling
+                        during your free trial.
+                      </p>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={
+                          handleVendorSubscriptionPayment
+                        }
+                        disabled={
+                          subscriptionLoading
+                        }
+                      >
+                        {subscriptionLoading
+                          ? 'Opening Paystack...'
+                          : 'Subscribe — ₦3,999/month'}
+                      </button>
+                    )}
+                  </>
+                )}
+
+                {/* ACTIVE */}
+                {vendorSubscription.status ===
+                  'active' && (
+                  <>
+                    <p>
+                      Current period ends:{' '}
+                      {formatSubscriptionDate(
+                        vendorSubscription.current_period_end
+                      )}
+                    </p>
+
+                    <p>
+                      Your vendor subscription is
+                      active.
+                    </p>
+                  </>
+                )}
+
+                {/* GRACE PERIOD */}
+                {vendorSubscription.status ===
+                  'grace_period' && (
+                  <>
+                    <p>
+                      Grace period ends:{' '}
+                      {formatSubscriptionDate(
+                        vendorSubscription.grace_period_ends_at
+                      )}
+                    </p>
+
+                    <button
+                      type="button"
+                      onClick={
+                        handleVendorSubscriptionPayment
+                      }
+                      disabled={
+                        subscriptionLoading
+                      }
+                    >
+                      {subscriptionLoading
+                        ? 'Opening Paystack...'
+                        : 'Pay ₦3,999 / Renew Subscription'}
+                    </button>
+                  </>
+                )}
+
+                {/* PAST DUE */}
+                {vendorSubscription.status ===
+                  'past_due' && (
+                  <button
+                    type="button"
+                    onClick={
+                      handleVendorSubscriptionPayment
+                    }
+                    disabled={
+                      subscriptionLoading
+                    }
+                  >
+                    {subscriptionLoading
+                      ? 'Opening Paystack...'
+                      : 'Pay ₦3,999 / Renew Subscription'}
+                  </button>
+                )}
+
+                {/* EXPIRED */}
+                {vendorSubscription.status ===
+                  'expired' && (
+                  <button
+                    type="button"
+                    onClick={
+                      handleVendorSubscriptionPayment
+                    }
+                    disabled={
+                      subscriptionLoading
+                    }
+                  >
+                    {subscriptionLoading
+                      ? 'Opening Paystack...'
+                      : 'Subscribe — ₦3,999/month'}
+                  </button>
+                )}
+
+                {/* CANCELLED */}
+                {vendorSubscription.status ===
+                  'cancelled' && (
+                  <button
+                    type="button"
+                    onClick={
+                      handleVendorSubscriptionPayment
+                    }
+                    disabled={
+                      subscriptionLoading
+                    }
+                  >
+                    {subscriptionLoading
+                      ? 'Opening Paystack...'
+                      : 'Subscribe — ₦3,999/month'}
+                  </button>
+                )}
+
+              </div>
+            )}
 
           {/* ADD PRODUCT */}
           {isActiveStore && (

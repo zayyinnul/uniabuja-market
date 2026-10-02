@@ -6,6 +6,8 @@ const VAPID_PUBLIC_KEY =
 const VAPID_SUBJECT =
   'https://uniabuja-market.mammanabideen.workers.dev'
 
+const SUBSCRIPTION_GRACE_DAYS = 5
+
 function jsonResponse(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
     status,
@@ -41,16 +43,19 @@ async function getAuthenticatedUser(request, env) {
   const accessToken =
     authHeader.replace('Bearer ', '').trim()
 
-  const response = await fetch(
-    `${env.SUPABASE_URL}/auth/v1/user`,
-    {
-      method: 'GET',
-      headers: {
-        apikey: env.SUPABASE_PUBLISHABLE_KEY,
-        Authorization: `Bearer ${accessToken}`,
-      },
-    }
-  )
+  const response =
+    await fetch(
+      `${env.SUPABASE_URL}/auth/v1/user`,
+      {
+        method: 'GET',
+        headers: {
+          apikey:
+            env.SUPABASE_PUBLISHABLE_KEY,
+          Authorization:
+            `Bearer ${accessToken}`,
+        },
+      }
+    )
 
   if (!response.ok) {
     return null
@@ -69,7 +74,8 @@ async function supabaseRequest(
   options = {}
 ) {
   const headers = {
-    apikey: env.SUPABASE_SECRET_KEY,
+    apikey:
+      env.SUPABASE_SECRET_KEY,
     Authorization:
       `Bearer ${env.SUPABASE_SECRET_KEY}`,
     ...options.headers,
@@ -100,7 +106,8 @@ async function updateVendorPayout(
         headers: {
           'Content-Type':
             'application/json',
-          Prefer: 'return=minimal',
+          Prefer:
+            'return=minimal',
         },
         body: JSON.stringify({
           ...updates,
@@ -126,6 +133,1185 @@ async function updateVendorPayout(
 }
 
 // ---------------------------------------------------------
+// VENDOR SUBSCRIPTION HELPERS
+// ---------------------------------------------------------
+
+function parseMetadata(metadata) {
+  if (!metadata) {
+    return {}
+  }
+
+  if (
+    typeof metadata ===
+    'object'
+  ) {
+    return metadata
+  }
+
+  if (
+    typeof metadata ===
+    'string'
+  ) {
+    try {
+      return JSON.parse(metadata)
+    } catch {
+      return {}
+    }
+  }
+
+  return {}
+}
+
+function addDays(date, days) {
+  const result =
+    new Date(date)
+
+  result.setUTCDate(
+    result.getUTCDate() + days
+  )
+
+  return result.toISOString()
+}
+
+function addOneMonth(date) {
+  const result =
+    new Date(date)
+
+  result.setUTCMonth(
+    result.getUTCMonth() + 1
+  )
+
+  return result.toISOString()
+}
+
+async function getVendorSubscriptionById(
+  env,
+  subscriptionId
+) {
+  if (!subscriptionId) {
+    return null
+  }
+
+  const response =
+    await supabaseRequest(
+      env,
+      `/rest/v1/vendor_subscriptions?id=eq.${encodeURIComponent(
+        subscriptionId
+      )}&select=*&limit=1`,
+      {
+        method: 'GET',
+      }
+    )
+
+  if (!response.ok) {
+    console.error(
+      'Could not load vendor subscription by id:',
+      await response.text()
+    )
+
+    return null
+  }
+
+  const data =
+    await response.json()
+
+  return Array.isArray(data) &&
+    data.length
+    ? data[0]
+    : null
+}
+
+async function getVendorSubscriptionByVendorId(
+  env,
+  vendorId
+) {
+  if (!vendorId) {
+    return null
+  }
+
+  const response =
+    await supabaseRequest(
+      env,
+      `/rest/v1/vendor_subscriptions?vendor_id=eq.${encodeURIComponent(
+        vendorId
+      )}&select=*&limit=1`,
+      {
+        method: 'GET',
+      }
+    )
+
+  if (!response.ok) {
+    console.error(
+      'Could not load vendor subscription by vendor id:',
+      await response.text()
+    )
+
+    return null
+  }
+
+  const data =
+    await response.json()
+
+  return Array.isArray(data) &&
+    data.length
+    ? data[0]
+    : null
+}
+
+async function getVendorSubscriptionBySubscriptionCode(
+  env,
+  subscriptionCode
+) {
+  if (!subscriptionCode) {
+    return null
+  }
+
+  const response =
+    await supabaseRequest(
+      env,
+      `/rest/v1/vendor_subscriptions?paystack_subscription_code=eq.${encodeURIComponent(
+        subscriptionCode
+      )}&select=*&limit=1`,
+      {
+        method: 'GET',
+      }
+    )
+
+  if (!response.ok) {
+    console.error(
+      'Could not load vendor subscription by Paystack subscription code:',
+      await response.text()
+    )
+
+    return null
+  }
+
+  const data =
+    await response.json()
+
+  return Array.isArray(data) &&
+    data.length
+    ? data[0]
+    : null
+}
+
+async function getVendorSubscriptionByCustomerCode(
+  env,
+  customerCode
+) {
+  if (!customerCode) {
+    return null
+  }
+
+  const response =
+    await supabaseRequest(
+      env,
+      `/rest/v1/vendor_subscriptions?paystack_customer_code=eq.${encodeURIComponent(
+        customerCode
+      )}&select=*&limit=1`,
+      {
+        method: 'GET',
+      }
+    )
+
+  if (!response.ok) {
+    console.error(
+      'Could not load vendor subscription by Paystack customer code:',
+      await response.text()
+    )
+
+    return null
+  }
+
+  const data =
+    await response.json()
+
+  return Array.isArray(data) &&
+    data.length
+    ? data[0]
+    : null
+}
+
+async function findVendorSubscription(
+  env,
+  {
+    subscriptionId = null,
+    vendorId = null,
+    subscriptionCode = null,
+    customerCode = null,
+  } = {}
+) {
+  let subscription = null
+
+  if (subscriptionId) {
+    subscription =
+      await getVendorSubscriptionById(
+        env,
+        subscriptionId
+      )
+
+    if (subscription) {
+      return subscription
+    }
+  }
+
+  if (vendorId) {
+    subscription =
+      await getVendorSubscriptionByVendorId(
+        env,
+        vendorId
+      )
+
+    if (subscription) {
+      return subscription
+    }
+  }
+
+  if (subscriptionCode) {
+    subscription =
+      await getVendorSubscriptionBySubscriptionCode(
+        env,
+        subscriptionCode
+      )
+
+    if (subscription) {
+      return subscription
+    }
+  }
+
+  if (customerCode) {
+    subscription =
+      await getVendorSubscriptionByCustomerCode(
+        env,
+        customerCode
+      )
+
+    if (subscription) {
+      return subscription
+    }
+  }
+
+  return null
+}
+
+async function updateVendorSubscription(
+  env,
+  subscriptionId,
+  updates
+) {
+  if (!subscriptionId) {
+    throw new Error(
+      'Vendor subscription id is required'
+    )
+  }
+
+  const response =
+    await supabaseRequest(
+      env,
+      `/rest/v1/vendor_subscriptions?id=eq.${encodeURIComponent(
+        subscriptionId
+      )}`,
+      {
+        method: 'PATCH',
+        headers: {
+          'Content-Type':
+            'application/json',
+          Prefer:
+            'return=minimal',
+        },
+        body: JSON.stringify({
+          ...updates,
+          updated_at:
+            new Date().toISOString(),
+        }),
+      }
+    )
+
+  if (!response.ok) {
+    const errorText =
+      await response.text()
+
+    console.error(
+      `Could not update vendor subscription ${subscriptionId}:`,
+      errorText
+    )
+
+    throw new Error(
+      'Could not update vendor subscription'
+    )
+  }
+}
+
+async function resolvePaystackSubscriptionFromTransaction(
+  env,
+  reference
+) {
+  if (!reference) {
+    return null
+  }
+
+  try {
+    const response =
+      await fetch(
+        `https://api.paystack.co/transaction/verify/${encodeURIComponent(
+          reference
+        )}`,
+        {
+          method: 'GET',
+          headers: {
+            Authorization:
+              `Bearer ${env.PAYSTACK_SECRET_KEY}`,
+          },
+        }
+      )
+
+    if (!response.ok) {
+      return null
+    }
+
+    const data =
+      await response.json()
+
+    if (
+      !data?.status ||
+      !data?.data
+    ) {
+      return null
+    }
+
+    return data.data
+  } catch (error) {
+    console.error(
+      'Could not verify Paystack transaction while resolving subscription:',
+      error
+    )
+
+    return null
+  }
+}
+
+async function handleVendorSubscriptionWebhook(
+  env,
+  event
+) {
+  const eventName =
+    event?.event
+
+  const data =
+    event?.data || {}
+
+  const metadata =
+    parseMetadata(
+      data?.metadata
+    )
+
+  const subscriptionObject =
+    data?.subscription || {}
+
+  const customerObject =
+    data?.customer || {}
+
+  let subscriptionCode =
+    subscriptionObject?.subscription_code ||
+    data?.subscription_code ||
+    null
+
+  let customerCode =
+    customerObject?.customer_code ||
+    data?.customer_code ||
+    null
+
+  let vendorId =
+    metadata?.vendor_id ||
+    null
+
+  let subscriptionId =
+    metadata?.subscription_id ||
+    null
+
+  let subscription =
+    await findVendorSubscription(
+      env,
+      {
+        subscriptionId,
+        vendorId,
+        subscriptionCode,
+        customerCode,
+      }
+    )
+
+  // -------------------------------------------------------
+  // PAYSTACK TRANSACTION FALLBACK
+  //
+  // This is intentionally available for every vendor
+  // subscription event, not only subscription.create.
+  //
+  // If subscription.create was missed or delivered before
+  // the database codes were saved, a later charge.success
+  // can still recover the vendor/subscription using the
+  // original transaction metadata.
+  // -------------------------------------------------------
+
+  if (!subscription) {
+    const transactionReference =
+      data?.transaction?.reference ||
+      data?.transaction_reference ||
+      data?.reference ||
+      null
+
+    if (transactionReference) {
+      const transaction =
+        await resolvePaystackSubscriptionFromTransaction(
+          env,
+          transactionReference
+        )
+
+      if (transaction) {
+        const transactionMetadata =
+          parseMetadata(
+            transaction.metadata
+          )
+
+        vendorId =
+          vendorId ||
+          transactionMetadata?.vendor_id ||
+          null
+
+        subscriptionId =
+          subscriptionId ||
+          transactionMetadata?.subscription_id ||
+          null
+
+        subscriptionCode =
+          subscriptionCode ||
+          transaction?.subscription?.subscription_code ||
+          transaction?.subscription_code ||
+          null
+
+        customerCode =
+          customerCode ||
+          transaction?.customer?.customer_code ||
+          transaction?.customer_code ||
+          null
+
+        subscription =
+          await findVendorSubscription(
+            env,
+            {
+              subscriptionId,
+              vendorId,
+              subscriptionCode,
+              customerCode,
+            }
+          )
+      }
+    }
+  }
+
+  // -------------------------------------------------------
+  // ADDITIONAL VENDOR SUBSCRIPTION IDENTIFICATION
+  // -------------------------------------------------------
+
+  const explicitlyVendorSubscription =
+    metadata?.purpose ===
+    'vendor_subscription'
+
+  // A normal order payment must never be treated as a
+  // vendor subscription.
+  if (
+    !subscription &&
+    !explicitlyVendorSubscription
+  ) {
+    return {
+      handled: false,
+      reason:
+        'Not a vendor subscription event',
+    }
+  }
+
+  // If this is explicitly a vendor subscription but
+  // the database record cannot be found, log it.
+  if (!subscription) {
+    console.warn(
+      'Could not match Paystack event to a vendor subscription:',
+      JSON.stringify({
+        event:
+          eventName,
+        vendorId,
+        subscriptionId,
+        subscriptionCode,
+        customerCode,
+      })
+    )
+
+    return {
+      handled: false,
+      reason:
+        'Vendor subscription not found',
+    }
+  }
+
+  const now =
+    new Date().toISOString()
+
+  // -------------------------------------------------------
+  // FIRST SUBSCRIPTION CREATED
+  // -------------------------------------------------------
+
+  if (
+    eventName ===
+    'subscription.create'
+  ) {
+    const nextPaymentDate =
+      subscriptionObject?.next_payment_date ||
+      data?.next_payment_date ||
+      null
+
+    await updateVendorSubscription(
+      env,
+      subscription.id,
+      {
+        status: 'active',
+        current_period_start:
+          subscription.current_period_start ||
+          now,
+        current_period_end:
+          nextPaymentDate ||
+          subscription.current_period_end ||
+          addOneMonth(
+            new Date()
+          ),
+        grace_period_ends_at:
+          null,
+        paystack_customer_code:
+          customerCode ||
+          subscription.paystack_customer_code ||
+          null,
+        paystack_subscription_code:
+          subscriptionCode ||
+          subscription.paystack_subscription_code ||
+          null,
+      }
+    )
+
+    console.log(
+      `Vendor subscription ${subscription.id} activated by subscription.create`
+    )
+
+    return {
+      handled: true,
+      status: 'active',
+    }
+  }
+
+  // -------------------------------------------------------
+  // SUCCESSFUL PAYMENT
+  // -------------------------------------------------------
+
+  if (
+    eventName ===
+    'charge.success'
+  ) {
+    const purpose =
+      metadata?.purpose
+
+    const isVendorSubscription =
+      purpose ===
+        'vendor_subscription' ||
+      Boolean(
+        subscription
+      )
+
+    if (
+      !isVendorSubscription
+    ) {
+      return {
+        handled: false,
+        reason:
+          'Normal Paystack charge',
+      }
+    }
+
+    const nextPaymentDate =
+      subscriptionObject?.next_payment_date ||
+      data?.subscription?.next_payment_date ||
+      data?.next_payment_date ||
+      null
+
+    await updateVendorSubscription(
+      env,
+      subscription.id,
+      {
+        status: 'active',
+        current_period_start:
+          now,
+        current_period_end:
+          nextPaymentDate ||
+          addOneMonth(
+            new Date()
+          ),
+        grace_period_ends_at:
+          null,
+        paystack_customer_code:
+          customerCode ||
+          subscription.paystack_customer_code ||
+          null,
+        paystack_subscription_code:
+          subscriptionCode ||
+          subscription.paystack_subscription_code ||
+          null,
+      }
+    )
+
+    console.log(
+      `Vendor subscription ${subscription.id} marked active after successful Paystack charge.`
+    )
+
+    return {
+      handled: true,
+      status: 'active',
+    }
+  }
+
+  // -------------------------------------------------------
+  // FAILED RECURRING PAYMENT
+  // -------------------------------------------------------
+
+  if (
+    eventName ===
+    'invoice.payment_failed'
+  ) {
+    await updateVendorSubscription(
+      env,
+      subscription.id,
+      {
+        status:
+          'grace_period',
+        grace_period_ends_at:
+          addDays(
+            new Date(),
+            SUBSCRIPTION_GRACE_DAYS
+          ),
+        paystack_customer_code:
+          customerCode ||
+          subscription.paystack_customer_code ||
+          null,
+        paystack_subscription_code:
+          subscriptionCode ||
+          subscription.paystack_subscription_code ||
+          null,
+      }
+    )
+
+    console.log(
+      `Vendor subscription ${subscription.id} entered ${SUBSCRIPTION_GRACE_DAYS}-day grace period after failed payment.`
+    )
+
+    return {
+      handled: true,
+      status:
+        'grace_period',
+    }
+  }
+
+  // -------------------------------------------------------
+  // INVOICE UPDATE
+  // -------------------------------------------------------
+
+  if (
+    eventName ===
+    'invoice.update'
+  ) {
+    const invoiceStatus =
+      data?.status
+
+    const paid =
+      data?.paid === true ||
+      invoiceStatus ===
+        'success' ||
+      invoiceStatus ===
+        'paid'
+
+    if (paid) {
+      const nextPaymentDate =
+        subscriptionObject?.next_payment_date ||
+        data?.next_payment_date ||
+        null
+
+      await updateVendorSubscription(
+        env,
+        subscription.id,
+        {
+          status: 'active',
+          current_period_start:
+            now,
+          current_period_end:
+            nextPaymentDate ||
+            addOneMonth(
+              new Date()
+            ),
+          grace_period_ends_at:
+            null,
+          paystack_customer_code:
+            customerCode ||
+            subscription.paystack_customer_code ||
+            null,
+          paystack_subscription_code:
+            subscriptionCode ||
+            subscription.paystack_subscription_code ||
+            null,
+        }
+      )
+
+      return {
+        handled: true,
+        status: 'active',
+      }
+    }
+
+    return {
+      handled: true,
+      status:
+        subscription.status,
+    }
+  }
+
+  // -------------------------------------------------------
+  // SUBSCRIPTION WILL NOT RENEW
+  // -------------------------------------------------------
+
+  if (
+    eventName ===
+    'subscription.not_renew'
+  ) {
+    console.log(
+      `Vendor subscription ${subscription.id} will not renew. Current access remains until ${subscription.current_period_end || 'period end'}.`
+    )
+
+    return {
+      handled: true,
+      status:
+        subscription.status,
+    }
+  }
+
+  // -------------------------------------------------------
+  // SUBSCRIPTION DISABLED
+  // -------------------------------------------------------
+
+  if (
+    eventName ===
+    'subscription.disable'
+  ) {
+    const periodEnd =
+      subscription.current_period_end
+        ? new Date(
+            subscription.current_period_end
+          )
+        : null
+
+    const currentTime =
+      new Date()
+
+    if (
+      periodEnd &&
+      periodEnd >
+        currentTime
+    ) {
+      await updateVendorSubscription(
+        env,
+        subscription.id,
+        {
+          status:
+            'cancelled',
+          paystack_customer_code:
+            customerCode ||
+            subscription.paystack_customer_code ||
+            null,
+          paystack_subscription_code:
+            subscriptionCode ||
+            subscription.paystack_subscription_code ||
+            null,
+        }
+      )
+
+      console.log(
+        `Vendor subscription ${subscription.id} marked cancelled; current period remains valid until ${periodEnd.toISOString()}.`
+      )
+    } else {
+      await updateVendorSubscription(
+        env,
+        subscription.id,
+        {
+          status:
+            'expired',
+          grace_period_ends_at:
+            null,
+          paystack_customer_code:
+            customerCode ||
+            subscription.paystack_customer_code ||
+            null,
+          paystack_subscription_code:
+            subscriptionCode ||
+            subscription.paystack_subscription_code ||
+            null,
+        }
+      )
+
+      console.log(
+        `Vendor subscription ${subscription.id} marked expired after Paystack disable.`
+      )
+    }
+
+    return {
+      handled: true,
+      status:
+        periodEnd &&
+        periodEnd >
+          currentTime
+          ? 'cancelled'
+          : 'expired',
+    }
+  }
+
+  return {
+    handled: false,
+    reason:
+      'Unhandled subscription event',
+  }
+}
+
+// ---------------------------------------------------------
+// VENDOR SUBSCRIPTION CRON LIFECYCLE
+// ---------------------------------------------------------
+
+async function processVendorSubscriptionLifecycle(
+  env
+) {
+  const now =
+    new Date()
+
+  // -------------------------------------------------------
+  // TRIAL ENDED
+  // -------------------------------------------------------
+
+  const trialResponse =
+    await supabaseRequest(
+      env,
+      `/rest/v1/vendor_subscriptions?status=eq.trialing&trial_ends_at=lte.${encodeURIComponent(
+        now.toISOString()
+      )}&select=id,vendor_id,status,trial_ends_at,current_period_end`,
+      {
+        method: 'GET',
+      }
+    )
+
+  let trialSubscriptions = null
+
+  try {
+    trialSubscriptions =
+      await trialResponse.json()
+  } catch {
+    trialSubscriptions = null
+  }
+
+  if (
+    trialResponse.ok &&
+    Array.isArray(
+      trialSubscriptions
+    )
+  ) {
+    for (
+      const subscription of
+        trialSubscriptions
+    ) {
+      try {
+        await updateVendorSubscription(
+          env,
+          subscription.id,
+          {
+            status:
+              'grace_period',
+            grace_period_ends_at:
+              addDays(
+                now,
+                SUBSCRIPTION_GRACE_DAYS
+              ),
+          }
+        )
+
+        console.log(
+          `Vendor subscription ${subscription.id} trial ended. ${SUBSCRIPTION_GRACE_DAYS}-day grace period started.`
+        )
+      } catch (error) {
+        console.error(
+          `Could not transition trial subscription ${subscription.id}:`,
+          error
+        )
+      }
+    }
+  } else if (
+    !trialResponse.ok
+  ) {
+    console.error(
+      'Could not load expired vendor trials:',
+      trialSubscriptions
+    )
+  }
+
+  // -------------------------------------------------------
+  // ACTIVE PERIOD ENDED
+  // -------------------------------------------------------
+
+  const activeResponse =
+    await supabaseRequest(
+      env,
+      `/rest/v1/vendor_subscriptions?status=eq.active&current_period_end=lte.${encodeURIComponent(
+        now.toISOString()
+      )}&select=id,vendor_id,status,current_period_end`,
+      {
+        method: 'GET',
+      }
+    )
+
+  let activeSubscriptions = null
+
+  try {
+    activeSubscriptions =
+      await activeResponse.json()
+  } catch {
+    activeSubscriptions = null
+  }
+
+  if (
+    activeResponse.ok &&
+    Array.isArray(
+      activeSubscriptions
+    )
+  ) {
+    for (
+      const subscription of
+        activeSubscriptions
+    ) {
+      try {
+        await updateVendorSubscription(
+          env,
+          subscription.id,
+          {
+            status:
+              'grace_period',
+            grace_period_ends_at:
+              addDays(
+                now,
+                SUBSCRIPTION_GRACE_DAYS
+              ),
+          }
+        )
+
+        console.log(
+          `Vendor subscription ${subscription.id} paid period ended. Grace period started.`
+        )
+      } catch (error) {
+        console.error(
+          `Could not transition expired active subscription ${subscription.id}:`,
+          error
+        )
+      }
+    }
+  } else if (
+    !activeResponse.ok
+  ) {
+    console.error(
+      'Could not load expired active subscriptions:',
+      activeSubscriptions
+    )
+  }
+
+  // -------------------------------------------------------
+  // PAST DUE -> GRACE PERIOD
+  // -------------------------------------------------------
+
+  const pastDueResponse =
+    await supabaseRequest(
+      env,
+      `/rest/v1/vendor_subscriptions?status=eq.past_due&select=id,vendor_id,status,current_period_end,grace_period_ends_at`,
+      {
+        method: 'GET',
+      }
+    )
+
+  let pastDueSubscriptions = null
+
+  try {
+    pastDueSubscriptions =
+      await pastDueResponse.json()
+  } catch {
+    pastDueSubscriptions = null
+  }
+
+  if (
+    pastDueResponse.ok &&
+    Array.isArray(
+      pastDueSubscriptions
+    )
+  ) {
+    for (
+      const subscription of
+        pastDueSubscriptions
+    ) {
+      try {
+        await updateVendorSubscription(
+          env,
+          subscription.id,
+          {
+            status:
+              'grace_period',
+            grace_period_ends_at:
+              subscription.grace_period_ends_at ||
+              addDays(
+                now,
+                SUBSCRIPTION_GRACE_DAYS
+              ),
+          }
+        )
+      } catch (error) {
+        console.error(
+          `Could not transition past-due subscription ${subscription.id}:`,
+          error
+        )
+      }
+    }
+  }
+
+  // -------------------------------------------------------
+  // GRACE PERIOD ENDED
+  // -------------------------------------------------------
+
+  const graceResponse =
+    await supabaseRequest(
+      env,
+      `/rest/v1/vendor_subscriptions?status=eq.grace_period&grace_period_ends_at=lte.${encodeURIComponent(
+        now.toISOString()
+      )}&select=id,vendor_id,status,grace_period_ends_at`,
+      {
+        method: 'GET',
+      }
+    )
+
+  let graceSubscriptions = null
+
+  try {
+    graceSubscriptions =
+      await graceResponse.json()
+  } catch {
+    graceSubscriptions = null
+  }
+
+  if (
+    graceResponse.ok &&
+    Array.isArray(
+      graceSubscriptions
+    )
+  ) {
+    for (
+      const subscription of
+        graceSubscriptions
+    ) {
+      try {
+        await updateVendorSubscription(
+          env,
+          subscription.id,
+          {
+            status:
+              'expired',
+            grace_period_ends_at:
+              null,
+          }
+        )
+
+        console.log(
+          `Vendor subscription ${subscription.id} expired after grace period.`
+        )
+      } catch (error) {
+        console.error(
+          `Could not expire subscription ${subscription.id}:`,
+          error
+        )
+      }
+    }
+  } else if (
+    !graceResponse.ok
+  ) {
+    console.error(
+      'Could not load expired grace-period subscriptions:',
+      graceSubscriptions
+    )
+  }
+
+  // -------------------------------------------------------
+  // CANCELLED PERIODS ENDED
+  // -------------------------------------------------------
+
+  const cancelledResponse =
+    await supabaseRequest(
+      env,
+      `/rest/v1/vendor_subscriptions?status=eq.cancelled&current_period_end=lte.${encodeURIComponent(
+        now.toISOString()
+      )}&select=id,vendor_id,status,current_period_end`,
+      {
+        method: 'GET',
+      }
+    )
+
+  let cancelledSubscriptions = null
+
+  try {
+    cancelledSubscriptions =
+      await cancelledResponse.json()
+  } catch {
+    cancelledSubscriptions = null
+  }
+
+  if (
+    cancelledResponse.ok &&
+    Array.isArray(
+      cancelledSubscriptions
+    )
+  ) {
+    for (
+      const subscription of
+        cancelledSubscriptions
+    ) {
+      try {
+        await updateVendorSubscription(
+          env,
+          subscription.id,
+          {
+            status:
+              'expired',
+            grace_period_ends_at:
+              null,
+          }
+        )
+
+        console.log(
+          `Cancelled vendor subscription ${subscription.id} is now expired.`
+        )
+      } catch (error) {
+        console.error(
+          `Could not expire cancelled subscription ${subscription.id}:`,
+          error
+        )
+      }
+    }
+  }
+
+  console.log(
+    'Vendor subscription lifecycle check completed.'
+  )
+}
+
+// ---------------------------------------------------------
 // WEB PUSH
 // ---------------------------------------------------------
 
@@ -142,7 +1328,8 @@ async function deletePushSubscription(
       {
         method: 'DELETE',
         headers: {
-          Prefer: 'return=minimal',
+          Prefer:
+            'return=minimal',
         },
       }
     )
@@ -205,7 +1392,9 @@ async function sendPushNotification(
 
   if (
     !subscriptionsResponse.ok ||
-    !Array.isArray(subscriptions)
+    !Array.isArray(
+      subscriptions
+    )
   ) {
     console.error(
       'Could not load push subscriptions:',
@@ -260,7 +1449,8 @@ async function sendPushNotification(
     })
 
   for (
-    const subscriptionRow of subscriptions
+    const subscriptionRow of
+      subscriptions
   ) {
     const subscription = {
       endpoint:
@@ -334,7 +1524,9 @@ async function sendPushNotification(
 // ---------------------------------------------------------
 
 function arrayBufferToHex(buffer) {
-  return [...new Uint8Array(buffer)]
+  return [
+    ...new Uint8Array(buffer),
+  ]
     .map((byte) =>
       byte
         .toString(16)
@@ -369,7 +1561,9 @@ async function createHmacSha512Hex(
       encoder.encode(payload)
     )
 
-  return arrayBufferToHex(signature)
+  return arrayBufferToHex(
+    signature
+  )
 }
 
 function safeEqual(a, b) {
@@ -383,7 +1577,11 @@ function safeEqual(a, b) {
 
   let result = 0
 
-  for (let i = 0; i < a.length; i++) {
+  for (
+    let i = 0;
+    i < a.length;
+    i++
+  ) {
     result |=
       a.charCodeAt(i) ^
       b.charCodeAt(i)
@@ -440,7 +1638,10 @@ async function reconcileTransfer(
     }
   }
 
-  if (verifyResponse.status === 404) {
+  if (
+    verifyResponse.status ===
+    404
+  ) {
     return {
       found: false,
       temporaryError: false,
@@ -492,7 +1693,8 @@ async function reconcileTransfer(
   )
 
   if (
-    transferStatus === 'success'
+    transferStatus ===
+    'success'
   ) {
     await updateVendorPayout(
       env,
@@ -512,7 +1714,8 @@ async function reconcileTransfer(
   }
 
   if (
-    transferStatus === 'failed'
+    transferStatus ===
+    'failed'
   ) {
     await updateVendorPayout(
       env,
@@ -532,7 +1735,8 @@ async function reconcileTransfer(
   }
 
   if (
-    transferStatus === 'reversed'
+    transferStatus ===
+    'reversed'
   ) {
     await updateVendorPayout(
       env,
@@ -572,6 +1776,7 @@ async function processVendorPayout(
     console.error(
       `Payout ${payout.id} has no Paystack reference`
     )
+
     return
   }
 
@@ -623,7 +1828,9 @@ async function processVendorPayout(
 
   if (
     !accountResponse.ok ||
-    !Array.isArray(accountData) ||
+    !Array.isArray(
+      accountData
+    ) ||
     !accountData.length
   ) {
     console.error(
@@ -649,10 +1856,14 @@ async function processVendorPayout(
   }
 
   const payoutAmount =
-    Number(payout.payout_amount)
+    Number(
+      payout.payout_amount
+    )
 
   if (
-    !Number.isFinite(payoutAmount) ||
+    !Number.isFinite(
+      payoutAmount
+    ) ||
     payoutAmount <= 0
   ) {
     console.error(
@@ -702,7 +1913,8 @@ async function processVendorPayout(
         },
         body: JSON.stringify({
           source: 'balance',
-          amount: amountInKobo,
+          amount:
+            amountInKobo,
           recipient:
             account.paystack_recipient_code,
           reference,
@@ -742,7 +1954,9 @@ async function processVendorPayout(
     })
   )
 
-  if (!transferResponse.ok) {
+  if (
+    !transferResponse.ok
+  ) {
     const message =
       transferData?.message ||
       'Paystack transfer request failed'
@@ -755,7 +1969,9 @@ async function processVendorPayout(
     return
   }
 
-  if (!transferData?.status) {
+  if (
+    !transferData?.status
+  ) {
     console.error(
       `Paystack returned an unsuccessful response for payout ${payout.id}:`,
       transferData
@@ -768,7 +1984,8 @@ async function processVendorPayout(
     transferData?.data?.status
 
   if (
-    transferStatus === 'success'
+    transferStatus ===
+    'success'
   ) {
     await updateVendorPayout(
       env,
@@ -785,7 +2002,8 @@ async function processVendorPayout(
   }
 
   if (
-    transferStatus === 'failed'
+    transferStatus ===
+    'failed'
   ) {
     await updateVendorPayout(
       env,
@@ -793,7 +2011,8 @@ async function processVendorPayout(
       {
         status: 'failed',
         failure_reason:
-          transferData?.data?.reason ||
+          transferData?.data
+            ?.reason ||
           'Paystack transfer failed',
       }
     )
@@ -802,7 +2021,8 @@ async function processVendorPayout(
   }
 
   if (
-    transferStatus === 'reversed'
+    transferStatus ===
+    'reversed'
   ) {
     await updateVendorPayout(
       env,
@@ -810,7 +2030,8 @@ async function processVendorPayout(
       {
         status: 'reversed',
         failure_reason:
-          transferData?.data?.reason ||
+          transferData?.data
+            ?.reason ||
           'Paystack transfer was reversed',
       }
     )
@@ -863,7 +2084,9 @@ async function processPendingVendorPayouts(
     return
   }
 
-  if (!payoutsResponse.ok) {
+  if (
+    !payoutsResponse.ok
+  ) {
     console.error(
       'Could not load processing payouts:',
       payoutsData
@@ -873,7 +2096,9 @@ async function processPendingVendorPayouts(
   }
 
   if (
-    !Array.isArray(payoutsData) ||
+    !Array.isArray(
+      payoutsData
+    ) ||
     !payoutsData.length
   ) {
     console.log(
@@ -888,7 +2113,8 @@ async function processPendingVendorPayouts(
   )
 
   for (
-    const payout of payoutsData
+    const payout of
+      payoutsData
   ) {
     try {
       await processVendorPayout(
@@ -909,7 +2135,10 @@ async function processPendingVendorPayouts(
 // ---------------------------------------------------------
 
 export default {
-  async fetch(request, env) {
+  async fetch(
+    request,
+    env
+  ) {
     const url =
       new URL(request.url)
 
@@ -917,17 +2146,20 @@ export default {
       request.method ===
       'OPTIONS'
     ) {
-      return new Response(null, {
-        status: 204,
-        headers: {
-          'Access-Control-Allow-Origin':
-            '*',
-          'Access-Control-Allow-Headers':
-            'Content-Type, Authorization, x-paystack-signature, x-push-webhook-secret',
-          'Access-Control-Allow-Methods':
-            'GET, POST, OPTIONS',
-        },
-      })
+      return new Response(
+        null,
+        {
+          status: 204,
+          headers: {
+            'Access-Control-Allow-Origin':
+              '*',
+            'Access-Control-Allow-Headers':
+              'Content-Type, Authorization, x-paystack-signature, x-push-webhook-secret',
+            'Access-Control-Allow-Methods':
+              'GET, POST, OPTIONS',
+          },
+        }
+      )
     }
 
     // -------------------------------------------------------
@@ -1008,19 +2240,6 @@ export default {
           JSON.stringify(payload)
         )
 
-        // ---------------------------------------------------
-        // Resolve the notification from the actual webhook
-        // payload used by this project.
-        //
-        // Current payload:
-        // {
-        //   title,
-        //   message,
-        //   user_id,
-        //   notification_id
-        // }
-        // ---------------------------------------------------
-
         let notification = null
 
         if (
@@ -1039,19 +2258,20 @@ export default {
           }
         }
 
-        // Standard Supabase Database Webhook format
         if (
           !notification &&
-          payload?.type === 'INSERT' &&
-          payload?.table === 'notifications' &&
-          payload?.schema === 'public' &&
+          payload?.type ===
+            'INSERT' &&
+          payload?.table ===
+            'notifications' &&
+          payload?.schema ===
+            'public' &&
           payload?.record
         ) {
           notification =
             payload.record
         }
 
-        // Direct notification record
         if (
           !notification &&
           payload?.id &&
@@ -1061,7 +2281,6 @@ export default {
             payload
         }
 
-        // Custom wrapper containing a notification record
         if (
           !notification &&
           payload?.record?.id &&
@@ -1088,7 +2307,9 @@ export default {
         ) {
           console.error(
             'Notification record is incomplete:',
-            JSON.stringify(notification)
+            JSON.stringify(
+              notification
+            )
           )
 
           return jsonResponse(
@@ -1150,7 +2371,7 @@ export default {
     }
 
     // -------------------------------------------------------
-    // PAYSTACK TRANSFER WEBHOOK
+    // PAYSTACK WEBHOOK
     // -------------------------------------------------------
 
     if (
@@ -1219,12 +2440,75 @@ export default {
         const eventName =
           event?.event
 
+        console.log(
+          'PAYSTACK WEBHOOK EVENT:',
+          eventName
+        )
+
+        // -----------------------------------------------------
+        // VENDOR SUBSCRIPTION EVENTS
+        // -----------------------------------------------------
+
+        if (
+          [
+            'subscription.create',
+            'subscription.disable',
+            'subscription.not_renew',
+            'invoice.create',
+            'invoice.update',
+            'invoice.payment_failed',
+            'charge.success',
+          ].includes(eventName)
+        ) {
+          try {
+            const result =
+              await handleVendorSubscriptionWebhook(
+                env,
+                event
+              )
+
+            if (
+              result?.handled
+            ) {
+              return jsonResponse({
+                success: true,
+                subscription:
+                  true,
+                status:
+                  result.status ||
+                  null,
+              })
+            }
+          } catch (subscriptionError) {
+            console.error(
+              'Vendor subscription webhook processing error:',
+              subscriptionError
+            )
+
+            return jsonResponse(
+              {
+                success: false,
+                message:
+                  subscriptionError.message ||
+                  'Vendor subscription webhook processing failed',
+              },
+              500
+            )
+          }
+        }
+
+        // -----------------------------------------------------
+        // PAYOUT TRANSFER EVENTS
+        // -----------------------------------------------------
+
         if (
           ![
             'transfer.success',
             'transfer.failed',
             'transfer.reversed',
-          ].includes(eventName)
+          ].includes(
+            eventName
+          )
         ) {
           return jsonResponse({
             success: true,
@@ -1305,26 +2589,30 @@ export default {
           payouts[0]
 
         if (
-          payout.status === 'paid'
+          payout.status ===
+          'paid'
         ) {
           return jsonResponse({
             success: true,
-            already_processed: true,
+            already_processed:
+              true,
           })
         }
 
         if (
-          payout.status === 'reversed'
+          payout.status ===
+          'reversed'
         ) {
           return jsonResponse({
             success: true,
-            already_processed: true,
+            already_processed:
+              true,
           })
         }
 
         if (
           eventName ===
-            'transfer.success'
+          'transfer.success'
         ) {
           if (
             ![
@@ -1347,14 +2635,15 @@ export default {
               status: 'paid',
               paid_at:
                 new Date().toISOString(),
-              failure_reason: null,
+              failure_reason:
+                null,
             }
           )
         }
 
         if (
           eventName ===
-            'transfer.failed'
+          'transfer.failed'
         ) {
           if (
             ![
@@ -1384,7 +2673,7 @@ export default {
 
         if (
           eventName ===
-            'transfer.reversed'
+          'transfer.reversed'
         ) {
           if (
             ![
@@ -1562,12 +2851,14 @@ export default {
 
         const accountNumber =
           String(
-            body.account_number ?? ''
+            body.account_number ??
+              ''
           ).trim()
 
         const bankCode =
           String(
-            body.bank_code ?? ''
+            body.bank_code ??
+              ''
           ).trim()
 
         if (
@@ -1710,7 +3001,9 @@ export default {
 
         if (
           !accountResponse.ok ||
-          !Array.isArray(accountData) ||
+          !Array.isArray(
+            accountData
+          ) ||
           !accountData.length ||
           !accountData[0]
             ?.paystack_recipient_code
@@ -1775,7 +3068,8 @@ export default {
 
         if (
           !recipientResponse.ok ||
-          recipientData?.status !== true
+          recipientData?.status !==
+            true
         ) {
           return jsonResponse(
             {
@@ -1892,7 +3186,9 @@ export default {
         const accountData =
           await accountResponse.json()
 
-        if (!accountResponse.ok) {
+        if (
+          !accountResponse.ok
+        ) {
           console.error(
             'Payout account lookup failed:',
             accountData
@@ -2036,7 +3332,9 @@ export default {
         const updateData =
           await updateResponse.json()
 
-        if (!updateResponse.ok) {
+        if (
+          !updateResponse.ok
+        ) {
           console.error(
             'Could not save recipient code:',
             updateData
@@ -2109,14 +3407,18 @@ export default {
 
         const accessToken =
           authHeader
-            .replace('Bearer ', '')
+            .replace(
+              'Bearer ',
+              ''
+            )
             .trim()
 
         const body =
           await request.json()
 
-        const { order_id } =
-          body
+        const {
+          order_id,
+        } = body
 
         if (!order_id) {
           return jsonResponse(
@@ -2157,7 +3459,9 @@ export default {
         const prepareData =
           await prepareResponse.json()
 
-        if (!prepareResponse.ok) {
+        if (
+          !prepareResponse.ok
+        ) {
           return jsonResponse(
             {
               success: false,
@@ -2260,7 +3564,8 @@ export default {
         }
 
         const paystackReference =
-          paystackData.data.reference
+          paystackData.data
+            .reference
 
         const updateOrderResponse =
           await supabaseRequest(
@@ -2286,11 +3591,14 @@ export default {
               }),
             }
           )
-          console.log(
+
+        console.log(
           'PAYMENT UPDATE RESULT:',
           updateOrderResponse.status,
-         await updateOrderResponse.clone().text()
-         );
+          await updateOrderResponse
+            .clone()
+            .text()
+        )
 
         if (
           !updateOrderResponse.ok
@@ -2339,7 +3647,314 @@ export default {
       }
     }
 
-        // ---------------------------------------------------------
+    // ---------------------------------------------------------
+    // VENDOR SUBSCRIPTION INITIALIZATION
+    // ---------------------------------------------------------
+
+    if (
+      [
+        '/api/vendor-subscription/initialize',
+        '/api/subscriptions/initialize',
+      ].includes(
+        url.pathname
+      ) &&
+      request.method === 'POST'
+    ) {
+      try {
+        const user =
+          await getAuthenticatedUser(
+            request,
+            env
+          )
+
+        if (!user?.id) {
+          return jsonResponse(
+            {
+              success: false,
+              message:
+                'You must be logged in',
+            },
+            401
+          )
+        }
+
+        if (!user.email) {
+          return jsonResponse(
+            {
+              success: false,
+              message:
+                'Your account does not have an email address',
+            },
+            400
+          )
+        }
+
+        if (
+          !env.PAYSTACK_VENDOR_PLAN_CODE
+        ) {
+          console.error(
+            'PAYSTACK_VENDOR_PLAN_CODE is not configured.'
+          )
+
+          return jsonResponse(
+            {
+              success: false,
+              message:
+                'Vendor subscription plan is not configured',
+            },
+            500
+          )
+        }
+
+        const profileResponse =
+          await supabaseRequest(
+            env,
+            `/rest/v1/profiles?id=eq.${encodeURIComponent(
+              user.id
+            )}&select=id,role&limit=1`,
+            {
+              method: 'GET',
+            }
+          )
+
+        let profiles = null
+
+        try {
+          profiles =
+            await profileResponse.json()
+        } catch {
+          profiles = null
+        }
+
+        if (
+          !profileResponse.ok ||
+          !Array.isArray(
+            profiles
+          ) ||
+          !profiles.length
+        ) {
+          console.error(
+            'Could not verify vendor profile:',
+            profiles
+          )
+
+          return jsonResponse(
+            {
+              success: false,
+              message:
+                'Could not verify your vendor account',
+            },
+            400
+          )
+        }
+
+        if (
+          profiles[0].role !==
+          'vendor'
+        ) {
+          return jsonResponse(
+            {
+              success: false,
+              message:
+                'Only vendors can start a vendor subscription',
+            },
+            403
+          )
+        }
+
+        const subscriptionResponse =
+          await supabaseRequest(
+            env,
+            `/rest/v1/vendor_subscriptions?vendor_id=eq.${encodeURIComponent(
+              user.id
+            )}&select=id,status,monthly_price,trial_ends_at,current_period_end,grace_period_ends_at&limit=1`,
+            {
+              method: 'GET',
+            }
+          )
+
+        let subscriptions = null
+
+        try {
+          subscriptions =
+            await subscriptionResponse.json()
+        } catch {
+          subscriptions = null
+        }
+
+        if (
+          !subscriptionResponse.ok ||
+          !Array.isArray(
+            subscriptions
+          ) ||
+          !subscriptions.length
+        ) {
+          console.error(
+            'Could not load vendor subscription:',
+            subscriptions
+          )
+
+          return jsonResponse(
+            {
+              success: false,
+              message:
+                'Vendor subscription record not found',
+            },
+            404
+          )
+        }
+
+        const subscription =
+          subscriptions[0]
+
+        if (
+          [
+            'active',
+            'trialing',
+          ].includes(
+            subscription.status
+          )
+        ) {
+          return jsonResponse(
+            {
+              success: false,
+              message:
+                'Your vendor subscription is already active',
+            },
+            400
+          )
+        }
+
+        const monthlyPrice =
+          Number(
+            subscription.monthly_price
+          )
+
+        if (
+          !Number.isFinite(
+            monthlyPrice
+          ) ||
+          monthlyPrice <= 0
+        ) {
+          return jsonResponse(
+            {
+              success: false,
+              message:
+                'Invalid vendor subscription amount',
+            },
+            400
+          )
+        }
+
+        const internalReference =
+          `UM-VSUB-${user.id}-${crypto.randomUUID()}`
+
+        const paystackResponse =
+          await fetch(
+            'https://api.paystack.co/transaction/initialize',
+            {
+              method: 'POST',
+              headers: {
+                Authorization:
+                  `Bearer ${env.PAYSTACK_SECRET_KEY}`,
+                'Content-Type':
+                  'application/json',
+              },
+              body: JSON.stringify({
+                email:
+                  user.email,
+                amount:
+                  Math.round(
+                    monthlyPrice * 100
+                  ),
+                reference:
+                  internalReference,
+                currency: 'NGN',
+                plan:
+                  env.PAYSTACK_VENDOR_PLAN_CODE,
+                callback_url:
+                  `${url.origin}/vendor-subscription/callback`,
+                metadata:
+                  JSON.stringify({
+                    vendor_id:
+                      user.id,
+                    subscription_id:
+                      subscription.id,
+                    purpose:
+                      'vendor_subscription',
+                  }),
+              }),
+            }
+          )
+
+        const paystackData =
+          await paystackResponse.json()
+
+        if (
+          !paystackResponse.ok ||
+          !paystackData.status ||
+          !paystackData.data
+            ?.authorization_url ||
+          !paystackData.data
+            ?.reference
+        ) {
+          console.error(
+            'Vendor subscription Paystack initialization failed:',
+            paystackData
+          )
+
+          return jsonResponse(
+            {
+              success: false,
+              message:
+                paystackData.message ||
+                'Paystack could not initialize the vendor subscription',
+            },
+            400
+          )
+        }
+
+        console.log(
+          'Vendor subscription initialized:',
+          JSON.stringify({
+            vendor_id:
+              user.id,
+            subscription_id:
+              subscription.id,
+            reference:
+              paystackData.data
+                .reference,
+          })
+        )
+
+        return jsonResponse({
+          success: true,
+          authorization_url:
+            paystackData.data
+              .authorization_url,
+          reference:
+            paystackData.data
+              .reference,
+        })
+      } catch (error) {
+        console.error(
+          'Vendor subscription initialization error:',
+          error
+        )
+
+        return jsonResponse(
+          {
+            success: false,
+            message:
+              error.message ||
+              'Vendor subscription initialization failed',
+          },
+          500
+        )
+      }
+    }
+
+    // ---------------------------------------------------------
     // PAYMENT CALLBACK
     // ---------------------------------------------------------
 
@@ -2381,7 +3996,8 @@ export default {
         if (
           !verifyResponse.ok ||
           !verifyData.status ||
-          verifyData.data?.status !==
+          verifyData.data
+            ?.status !==
             'success'
         ) {
           return Response.redirect(
@@ -2411,7 +4027,9 @@ export default {
 
         if (
           !orderResponse.ok ||
-          !Array.isArray(orders) ||
+          !Array.isArray(
+            orders
+          ) ||
           !orders.length
         ) {
           return Response.redirect(
@@ -2460,21 +4078,6 @@ export default {
             303
           )
         }
-
-        /*
-          The Paystack callback has no customer access token,
-          so mark_order_payment_paid() cannot use auth.uid()
-          here.
-
-          We have already:
-          1. Verified the Paystack transaction.
-          2. Confirmed the order exists.
-          3. Confirmed the Paystack reference belongs to the order.
-          4. Confirmed the amount paid matches the order total.
-
-          Therefore the Worker performs the final server-side
-          payment update using the existing service-role access.
-        */
 
         if (
           order.payment_status !==
@@ -2529,11 +4132,6 @@ export default {
             )
           }
 
-          /*
-            Remove only the products belonging to this
-            successfully paid order from the customer's cart.
-          */
-
           const orderItemsResponse =
             await supabaseRequest(
               env,
@@ -2556,12 +4154,17 @@ export default {
 
           if (
             orderItemsResponse.ok &&
-            Array.isArray(orderItems)
+            Array.isArray(
+              orderItems
+            )
           ) {
             for (
-              const item of orderItems
+              const item of
+                orderItems
             ) {
-              if (!item?.product_id) {
+              if (
+                !item?.product_id
+              ) {
                 continue
               }
 
@@ -2617,11 +4220,14 @@ export default {
         )
       }
     }
+
     // ---------------------------------------------------------
     // FRONTEND ASSETS
     // ---------------------------------------------------------
 
-    return env.ASSETS.fetch(request)
+    return env.ASSETS.fetch(
+      request
+    )
   },
 
   // ---------------------------------------------------------
@@ -2634,23 +4240,32 @@ export default {
     ctx
   ) {
     console.log(
-      'UniAbuja Market payout cron triggered:',
+      'UniAbuja Market cron triggered:',
       new Date().toISOString()
     )
 
+    // Subscription lifecycle must run independently
+    // of the payout toggle.
+    ctx.waitUntil(
+      processVendorSubscriptionLifecycle(
+        env
+      )
+    )
+
+    // Existing payout processor remains separate.
     if (
-      env.AUTOMATED_PAYOUTS_ENABLED !==
+      env.AUTOMATED_PAYOUTS_ENABLED ===
       'true'
     ) {
-      console.log(
-        'AUTOMATED_PAYOUTS_ENABLED is not true. No payout will be sent.'
+      ctx.waitUntil(
+        processPendingVendorPayouts(
+          env
+        )
       )
-
-      return
+    } else {
+      console.log(
+        'AUTOMATED_PAYOUTS_ENABLED is not true. Skipping payout processing.'
+      )
     }
-
-    ctx.waitUntil(
-      processPendingVendorPayouts(env)
-    )
   },
 }
