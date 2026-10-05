@@ -38,7 +38,6 @@ function Market({ user, onBack, onCart }) {
         }
       } else if (storeMatch) {
         setSelectedProduct(null)
-
         loadStore(storeMatch[1])
       } else {
         setSelectedProduct(null)
@@ -99,7 +98,10 @@ function Market({ user, onBack, onCart }) {
     setLoadingStore(true)
     setMessage('')
 
-    const { data: store, error: storeError } = await supabase
+    /*
+     * First try the value as a stores.id.
+     */
+    let { data: store, error: storeError } = await supabase
       .from('stores')
       .select(`
         id,
@@ -112,19 +114,53 @@ function Market({ user, onBack, onCart }) {
         status
       `)
       .eq('id', storeId)
-      .eq('status', 'approved')
+      .eq('status', 'active')
       .maybeSingle()
+
+    /*
+     * If that did not find anything, try the value as owner_id.
+     */
+    if (!store && !storeError) {
+      const { data: ownerStore, error: ownerStoreError } =
+        await supabase
+          .from('stores')
+          .select(`
+            id,
+            owner_id,
+            store_name,
+            description,
+            phone,
+            location,
+            logo_url,
+            status
+          `)
+          .eq('owner_id', storeId)
+          .eq('status', 'active')
+          .maybeSingle()
+
+      store = ownerStore
+      storeError = ownerStoreError
+    }
 
     if (storeError) {
       console.error('Store loading error:', storeError)
       setMessage('Could not load this store.')
+      setSelectedStore(null)
       setLoadingStore(false)
       return
     }
 
     if (!store) {
-      setMessage('Store not found or is not currently available.')
+      console.error(
+        'No active store found for identifier:',
+        storeId
+      )
+
+      setMessage(
+        'This vendor does not currently have an active store.'
+      )
       setSelectedStore(null)
+      setStoreProducts([])
       setLoadingStore(false)
       return
     }
@@ -189,9 +225,10 @@ function Market({ user, onBack, onCart }) {
   }
 
   /*
-   * FIX:
-   * Product has vendor_id, but the public store URL needs stores.id.
-   * Resolve the vendor's approved store first.
+   * Resolve the vendor store using BOTH possible relationships:
+   *
+   * 1. products.vendor_id -> stores.id
+   * 2. products.vendor_id -> stores.owner_id
    */
   const openVendorStore = async (vendorId) => {
     if (!vendorId) {
@@ -202,7 +239,16 @@ function Market({ user, onBack, onCart }) {
     setMessage('')
     setLoadingStore(true)
 
-    const { data: store, error } = await supabase
+    console.log(
+      'Looking for vendor store using vendor_id:',
+      vendorId
+    )
+
+    /*
+     * Attempt 1:
+     * vendor_id may actually contain stores.id
+     */
+    let { data: store, error } = await supabase
       .from('stores')
       .select(`
         id,
@@ -214,38 +260,75 @@ function Market({ user, onBack, onCart }) {
         logo_url,
         status
       `)
-      .eq('owner_id', vendorId)
-      .eq('status', 'approved')
+      .eq('id', vendorId)
+      .eq('status', 'active')
       .maybeSingle()
 
     if (error) {
       console.error(
-        'Vendor store lookup error:',
+        'Store ID lookup error:',
         error
       )
+    }
 
-      setLoadingStore(false)
-      setMessage('Could not load this vendor store.')
+    /*
+     * Attempt 2:
+     * vendor_id may contain the vendor/user ID.
+     */
+    if (!store) {
+      const result = await supabase
+        .from('stores')
+        .select(`
+          id,
+          owner_id,
+          store_name,
+          description,
+          phone,
+          location,
+          logo_url,
+          status
+        `)
+        .eq('owner_id', vendorId)
+        .eq('status', 'active')
+        .maybeSingle()
+
+      store = result.data
+      error = result.error
+
+      if (error) {
+        console.error(
+          'Store owner lookup error:',
+          error
+        )
+      }
+    }
+
+    setLoadingStore(false)
+
+    if (error) {
+      setMessage(
+        'Could not load this vendor store.'
+      )
       return
     }
 
     if (!store) {
-      setLoadingStore(false)
+      console.error(
+        'No active store found for vendor:',
+        vendorId
+      )
+
       setMessage(
-        'This vendor does not currently have an approved store.'
+        'This vendor does not currently have an active store.'
       )
       return
     }
-
-    setLoadingStore(false)
 
     await openStore(store.id)
   }
 
   /*
-   * FIX:
-   * Use browser history instead of pushState('/') so Android/browser
-   * Back correctly returns:
+   * Browser back handling:
    *
    * Product → Market
    * Store → Market

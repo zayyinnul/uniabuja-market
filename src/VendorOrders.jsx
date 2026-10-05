@@ -384,6 +384,14 @@ function VendorOrders({ user, onBack }) {
         )
       )
 
+      setAvailableRiders((current) => {
+        const updated = { ...current }
+
+        delete updated[order.order_id]
+
+        return updated
+      })
+
       setMessage(
         'You will deliver this order yourself.'
       )
@@ -402,6 +410,205 @@ function VendorOrders({ user, onBack }) {
     } finally {
       setTakingOverDelivery(null)
     }
+  }
+
+  /*
+   * Render available riders.
+   *
+   * This is shared by:
+   * - normal "Look for Rider" flow
+   * - rider rejection/cancellation flow
+   *
+   * This fixes the previous issue where
+   * "Look for Another Rider" successfully
+   * fetched riders but had nowhere to display them.
+   */
+  const renderAvailableRiders = (order) => {
+    const riders =
+      availableRiders[order.order_id]
+
+    if (!Array.isArray(riders)) {
+      return null
+    }
+
+    return (
+      <div
+        style={{
+          marginTop: '14px',
+        }}
+      >
+        {riders.length === 0 ? (
+          <div
+            style={{
+              background:
+                '#fff7ed',
+              border:
+                '1px solid #f97316',
+              borderRadius:
+                '10px',
+              padding:
+                '12px 14px',
+              color:
+                '#9a3412',
+            }}
+          >
+            <strong>
+              No active riders
+              available
+            </strong>
+
+            <p
+              style={{
+                margin:
+                  '5px 0 0',
+              }}
+            >
+              Try again later
+              or deliver the
+              order yourself.
+            </p>
+          </div>
+        ) : (
+          <div>
+            <strong
+              style={{
+                display:
+                  'block',
+                marginBottom:
+                  '8px',
+              }}
+            >
+              Available Riders
+            </strong>
+
+            <p
+              style={{
+                margin:
+                  '0 0 12px',
+                fontSize:
+                  '13px',
+                color:
+                  '#475569',
+              }}
+            >
+              Contact the
+              rider privately
+              to discuss
+              delivery price
+              and terms before
+              sending the
+              request.
+            </p>
+
+            <div
+              style={{
+                display:
+                  'grid',
+                gap: '10px',
+              }}
+            >
+              {riders.map(
+                (rider) => (
+                  <div
+                    key={
+                      rider.rider_id
+                    }
+                    style={{
+                      background:
+                        '#ffffff',
+                      border:
+                        '1px solid #e2e8f0',
+                      borderRadius:
+                        '10px',
+                      padding:
+                        '12px',
+                    }}
+                  >
+                    <div
+                      style={{
+                        display:
+                          'flex',
+                        justifyContent:
+                          'space-between',
+                        alignItems:
+                          'center',
+                        gap:
+                          '12px',
+                      }}
+                    >
+                      <div>
+                        <strong>
+                          🛵{' '}
+                          {rider.rider_name ||
+                            'Available Rider'}
+                        </strong>
+
+                        {rider.rider_phone && (
+                          <p
+                            style={{
+                              margin:
+                                '5px 0 0',
+                              fontSize:
+                                '14px',
+                              color:
+                                '#475569',
+                            }}
+                          >
+                            📞{' '}
+                            {
+                              rider.rider_phone
+                            }
+                          </p>
+                        )}
+
+                        <p
+                          style={{
+                            margin:
+                              '5px 0 0',
+                            fontSize:
+                              '12px',
+                            color:
+                              '#64748b',
+                          }}
+                        >
+                          Discuss
+                          price and
+                          terms
+                          privately
+                          before
+                          requesting
+                          the rider.
+                        </p>
+                      </div>
+
+                      <button
+                        type="button"
+                        className="primary-btn"
+                        disabled={
+                          assigningRider ===
+                          order.order_id
+                        }
+                        onClick={() =>
+                          assignRider(
+                            order,
+                            rider
+                          )
+                        }
+                      >
+                        {assigningRider ===
+                        order.order_id
+                          ? 'Sending...'
+                          : 'Request Rider'}
+                      </button>
+                    </div>
+                  </div>
+                )
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    )
   }
 
   /*
@@ -1098,6 +1305,10 @@ function VendorOrders({ user, onBack }) {
      * Vendor can either:
      * 1. Deliver the order themselves.
      * 2. Look for another rider.
+     *
+     * IMPORTANT:
+     * The available riders list is now
+     * rendered below the buttons.
      */
     if (
       delivery.delivery_method ===
@@ -1143,52 +1354,58 @@ function VendorOrders({ user, onBack }) {
             ].includes(
               order.order_status
             ) && (
-              <div
-                style={{
-                  display: 'flex',
-                  gap: '8px',
-                  flexWrap: 'wrap',
-                  marginTop: '10px',
-                }}
-              >
-                <button
-                  type="button"
-                  className="primary-btn"
-                  disabled={
-                    takingOverDelivery ===
-                    order.order_id
-                  }
-                  onClick={() =>
-                    takeOverDelivery(
-                      order
-                    )
-                  }
+              <>
+                <div
+                  style={{
+                    display: 'flex',
+                    gap: '8px',
+                    flexWrap: 'wrap',
+                    marginTop: '10px',
+                  }}
                 >
-                  {takingOverDelivery ===
-                  order.order_id
-                    ? 'Taking Over...'
-                    : 'Deliver Myself'}
-                </button>
+                  <button
+                    type="button"
+                    className="primary-btn"
+                    disabled={
+                      takingOverDelivery ===
+                      order.order_id
+                    }
+                    onClick={() =>
+                      takeOverDelivery(
+                        order
+                      )
+                    }
+                  >
+                    {takingOverDelivery ===
+                    order.order_id
+                      ? 'Taking Over...'
+                      : 'Deliver Myself'}
+                  </button>
 
-                <button
-                  type="button"
-                  className="secondary-btn"
-                  disabled={
-                    findingRiders ===
+                  <button
+                    type="button"
+                    className="secondary-btn"
+                    disabled={
+                      findingRiders ===
+                      order.order_id
+                    }
+                    onClick={() =>
+                      findAvailableRiders(
+                        order
+                      )
+                    }
+                  >
+                    {findingRiders ===
                     order.order_id
-                  }
-                  onClick={() =>
-                    findAvailableRiders(
-                      order
-                    )
-                  }
-                >
-                  {findingRiders ===
-                  order.order_id
-                    ? 'Looking for Riders...'
-                    : 'Look for Another Rider'}
-                </button>
-              </div>
+                      ? 'Looking for Riders...'
+                      : 'Look for Another Rider'}
+                  </button>
+                </div>
+
+                {renderAvailableRiders(
+                  order
+                )}
+              </>
             )}
         </div>
       )
@@ -1215,11 +1432,6 @@ function VendorOrders({ user, onBack }) {
       delivery.rider_request_status !==
         'cancelled'
     ) {
-      const riders =
-        availableRiders[
-          order.order_id
-        ]
-
       return (
         <div
           style={{
@@ -1264,183 +1476,8 @@ function VendorOrders({ user, onBack }) {
               : 'Look for Rider'}
           </button>
 
-          {Array.isArray(riders) && (
-            <div
-              style={{
-                marginTop: '14px',
-              }}
-            >
-              {riders.length === 0 ? (
-                <div
-                  style={{
-                    background:
-                      '#fff7ed',
-                    border:
-                      '1px solid #f97316',
-                    borderRadius:
-                      '10px',
-                    padding:
-                      '12px 14px',
-                    color:
-                      '#9a3412',
-                  }}
-                >
-                  <strong>
-                    No active riders
-                    available
-                  </strong>
-
-                  <p
-                    style={{
-                      margin:
-                        '5px 0 0',
-                    }}
-                  >
-                    Try again later
-                    or deliver the
-                    order yourself.
-                  </p>
-                </div>
-              ) : (
-                <div>
-                  <strong
-                    style={{
-                      display:
-                        'block',
-                      marginBottom:
-                        '8px',
-                    }}
-                  >
-                    Available Riders
-                  </strong>
-
-                  <p
-                    style={{
-                      margin:
-                        '0 0 12px',
-                      fontSize:
-                        '13px',
-                      color:
-                        '#475569',
-                    }}
-                  >
-                    Contact the
-                    rider privately
-                    to discuss
-                    delivery price
-                    and terms before
-                    sending the
-                    request.
-                  </p>
-
-                  <div
-                    style={{
-                      display:
-                        'grid',
-                      gap: '10px',
-                    }}
-                  >
-                    {riders.map(
-                      (rider) => (
-                        <div
-                          key={
-                            rider.rider_id
-                          }
-                          style={{
-                            background:
-                              '#ffffff',
-                            border:
-                              '1px solid #e2e8f0',
-                            borderRadius:
-                              '10px',
-                            padding:
-                              '12px',
-                          }}
-                        >
-                          <div
-                            style={{
-                              display:
-                                'flex',
-                              justifyContent:
-                                'space-between',
-                              alignItems:
-                                'center',
-                              gap:
-                                '12px',
-                            }}
-                          >
-                            <div>
-                              <strong>
-                                🛵{' '}
-                                {rider.rider_name ||
-                                  'Available Rider'}
-                              </strong>
-
-                              {rider.rider_phone && (
-                                <p
-                                  style={{
-                                    margin:
-                                      '5px 0 0',
-                                    fontSize:
-                                      '14px',
-                                    color:
-                                      '#475569',
-                                  }}
-                                >
-                                  📞{' '}
-                                  {
-                                    rider.rider_phone
-                                  }
-                                </p>
-                              )}
-
-                              <p
-                                style={{
-                                  margin:
-                                    '5px 0 0',
-                                  fontSize:
-                                    '12px',
-                                  color:
-                                    '#64748b',
-                                }}
-                              >
-                                Discuss
-                                price and
-                                terms
-                                privately
-                                before
-                                requesting
-                                the rider.
-                              </p>
-                            </div>
-
-                            <button
-                              type="button"
-                              className="primary-btn"
-                              disabled={
-                                assigningRider ===
-                                order.order_id
-                              }
-                              onClick={() =>
-                                assignRider(
-                                  order,
-                                  rider
-                                )
-                              }
-                            >
-                              {assigningRider ===
-                              order.order_id
-                                ? 'Sending...'
-                                : 'Request Rider'}
-                            </button>
-                          </div>
-                        </div>
-                      )
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
+          {renderAvailableRiders(
+            order
           )}
         </div>
       )
@@ -1622,7 +1659,8 @@ function VendorOrders({ user, onBack }) {
                 '8px',
               display:
                 'grid',
-              gap: '7px',
+              gap:
+                '7px',
             }}
           >
             {order.items.map(
@@ -1637,7 +1675,8 @@ function VendorOrders({ user, onBack }) {
                       'flex',
                     justifyContent:
                       'space-between',
-                    gap: '10px',
+                    gap:
+                      '10px',
                     padding:
                       '8px 0',
                     borderBottom:
@@ -1775,7 +1814,8 @@ function VendorOrders({ user, onBack }) {
                   '14px',
                 display:
                   'flex',
-                gap: '8px',
+                gap:
+                  '8px',
                 flexWrap:
                   'wrap',
               }}
@@ -1872,7 +1912,8 @@ function VendorOrders({ user, onBack }) {
                 style={{
                   display:
                     'flex',
-                  gap: '8px',
+                  gap:
+                    '8px',
                   flexWrap:
                     'wrap',
                 }}
@@ -2030,7 +2071,8 @@ function VendorOrders({ user, onBack }) {
             'space-between',
           alignItems:
             'center',
-          gap: '12px',
+          gap:
+            '12px',
           flexWrap:
             'wrap',
           marginBottom:
@@ -2120,7 +2162,8 @@ function VendorOrders({ user, onBack }) {
                 'grid',
               gridTemplateColumns:
                 'repeat(auto-fit, minmax(180px, 1fr))',
-              gap: '12px',
+              gap:
+                '12px',
               marginBottom:
                 '24px',
             }}
