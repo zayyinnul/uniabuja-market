@@ -46,6 +46,185 @@ function App() {
   const [subscriptionLoading, setSubscriptionLoading] =
     useState(false)
 
+  /*
+   * ---------------------------------------------------------
+   * BROWSER HISTORY
+   * ---------------------------------------------------------
+   *
+   * Each dashboard screen gets its own browser-history entry.
+   * Public /product/:id and /store/:id pages are handled by
+   * Market.jsx, so App.jsx deliberately leaves those URLs alone.
+   */
+
+  const getCurrentView = () => {
+    if (showAuth) return 'auth'
+    if (showAdminDashboard) return 'admin'
+    if (showRiderDashboard) return 'rider'
+    if (showProfile) return 'profile'
+    if (showVendorEarnings) return 'vendor-earnings'
+    if (showPayoutAccount) return 'payout-account'
+    if (showVendorOrders) return 'vendor-orders'
+    if (showOrders) return 'orders'
+    if (showCheckout) return 'checkout'
+    if (showCart) return 'cart'
+    if (showMarket) return 'market'
+    if (showMyProducts) return 'my-products'
+    if (showProduct) return 'product'
+    if (showStore) return 'store'
+
+    return 'home'
+  }
+
+  const resetViews = () => {
+    setShowAuth(false)
+    setShowStore(false)
+    setShowProduct(false)
+    setShowMyProducts(false)
+    setShowMarket(false)
+    setShowCart(false)
+    setShowCheckout(false)
+    setShowOrders(false)
+    setShowVendorOrders(false)
+    setShowPayoutAccount(false)
+    setShowVendorEarnings(false)
+    setShowProfile(false)
+    setShowAdminDashboard(false)
+    setShowRiderDashboard(false)
+  }
+
+  const showView = (view, addHistory = true) => {
+    resetViews()
+
+    switch (view) {
+      case 'auth':
+        setShowAuth(true)
+        break
+
+      case 'store':
+        setShowStore(true)
+        break
+
+      case 'product':
+        setShowProduct(true)
+        break
+
+      case 'my-products':
+        setShowMyProducts(true)
+        break
+
+      case 'market':
+        setShowMarket(true)
+        break
+
+      case 'cart':
+        setShowCart(true)
+        break
+
+      case 'checkout':
+        setShowCheckout(true)
+        break
+
+      case 'orders':
+        setShowOrders(true)
+        break
+
+      case 'vendor-orders':
+        setShowVendorOrders(true)
+        break
+
+      case 'payout-account':
+        setShowPayoutAccount(true)
+        break
+
+      case 'vendor-earnings':
+        setShowVendorEarnings(true)
+        break
+
+      case 'profile':
+        setShowProfile(true)
+        break
+
+      case 'admin':
+        setShowAdminDashboard(true)
+        break
+
+      case 'rider':
+        setShowRiderDashboard(true)
+        break
+
+      case 'home':
+      default:
+        break
+    }
+
+    if (addHistory) {
+      window.history.pushState(
+        { uniAbujaMarketView: view },
+        '',
+        window.location.pathname +
+          window.location.search
+      )
+    }
+  }
+
+  const goBack = () => {
+    if (window.history.length > 1) {
+      window.history.back()
+    } else {
+      showView('home', false)
+    }
+  }
+
+  /*
+   * Handle browser / Android Back button.
+   *
+   * IMPORTANT:
+   * Public product/store URLs are controlled by Market.jsx.
+   * App.jsx must not intercept them.
+   */
+
+  useEffect(() => {
+    const handlePopState = (event) => {
+      const path = window.location.pathname
+
+      const isPublicMarketDetail =
+        path.match(/^\/product\/[^/]+$/) ||
+        path.match(/^\/store\/[^/]+$/)
+
+      if (isPublicMarketDetail) {
+        return
+      }
+
+      const view =
+        event.state?.uniAbujaMarketView || 'home'
+
+      showView(view, false)
+    }
+
+    window.addEventListener(
+      'popstate',
+      handlePopState
+    )
+
+    if (
+      !window.history.state?.uniAbujaMarketView
+    ) {
+      window.history.replaceState(
+        { uniAbujaMarketView: 'home' },
+        '',
+        window.location.pathname +
+          window.location.search
+      )
+    }
+
+    return () => {
+      window.removeEventListener(
+        'popstate',
+        handlePopState
+      )
+    }
+  }, [])
+
   const loadStore = async (userId) => {
     const { data, error } = await supabase
       .from('stores')
@@ -54,7 +233,10 @@ function App() {
       .maybeSingle()
 
     if (error) {
-      console.error('Store loading error:', error)
+      console.error(
+        'Store loading error:',
+        error
+      )
       setStore(null)
       return
     }
@@ -66,10 +248,14 @@ function App() {
     let mounted = true
 
     const checkAdmin = async () => {
-      const { data, error } = await supabase.rpc('is_admin')
+      const { data, error } =
+        await supabase.rpc('is_admin')
 
       if (error) {
-        console.error('Admin check error:', error)
+        console.error(
+          'Admin check error:',
+          error
+        )
 
         if (mounted) {
           setIsAdmin(false)
@@ -78,14 +264,19 @@ function App() {
         return
       }
 
-      console.log('Admin check:', data)
+      console.log(
+        'Admin check:',
+        data
+      )
 
       if (mounted) {
         setIsAdmin(data === true)
       }
     }
 
-    const loadVendorSubscription = async (userId) => {
+    const loadVendorSubscription = async (
+      userId
+    ) => {
       if (!userId) {
         if (mounted) {
           setVendorSubscription(null)
@@ -97,25 +288,26 @@ function App() {
 
       setSubscriptionLoading(true)
 
-      const { data, error } = await supabase
-        .from('vendor_subscriptions')
-        .select(
-          `
-            id,
-            vendor_id,
-            status,
-            trial_started_at,
-            trial_ends_at,
-            current_period_start,
-            current_period_end,
-            grace_period_ends_at,
-            monthly_price,
-            paystack_customer_code,
-            paystack_subscription_code
-          `
-        )
-        .eq('vendor_id', userId)
-        .maybeSingle()
+      const { data, error } =
+        await supabase
+          .from('vendor_subscriptions')
+          .select(
+            `
+              id,
+              vendor_id,
+              status,
+              trial_started_at,
+              trial_ends_at,
+              current_period_start,
+              current_period_end,
+              grace_period_ends_at,
+              monthly_price,
+              paystack_customer_code,
+              paystack_subscription_code
+            `
+          )
+          .eq('vendor_id', userId)
+          .maybeSingle()
 
       if (error) {
         console.error(
@@ -148,7 +340,9 @@ function App() {
 
       if (session?.user) {
         await loadStore(session.user.id)
-        await loadVendorSubscription(session.user.id)
+        await loadVendorSubscription(
+          session.user.id
+        )
         await checkAdmin()
       } else {
         setStore(null)
@@ -166,28 +360,33 @@ function App() {
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange(
-      async (_event, session) => {
-        if (!mounted) return
+    } =
+      supabase.auth.onAuthStateChange(
+        async (_event, session) => {
+          if (!mounted) return
 
-        setUser(session?.user ?? null)
+          setUser(session?.user ?? null)
 
-        if (session?.user) {
-          await loadStore(session.user.id)
-          await loadVendorSubscription(session.user.id)
-          await checkAdmin()
-        } else {
-          setStore(null)
-          setVendorSubscription(null)
-          setIsAdmin(false)
-          setSubscriptionLoading(false)
+          if (session?.user) {
+            await loadStore(
+              session.user.id
+            )
+            await loadVendorSubscription(
+              session.user.id
+            )
+            await checkAdmin()
+          } else {
+            setStore(null)
+            setVendorSubscription(null)
+            setIsAdmin(false)
+            setSubscriptionLoading(false)
+          }
+
+          if (mounted) {
+            setLoading(false)
+          }
         }
-
-        if (mounted) {
-          setLoading(false)
-        }
-      }
-    )
+      )
 
     return () => {
       mounted = false
@@ -196,12 +395,14 @@ function App() {
   }, [])
 
   const isActiveStore =
-    user && store?.status === 'active'
+    user &&
+    store?.status === 'active'
 
   const isTrialStillActive = () => {
     if (
       !vendorSubscription ||
-      vendorSubscription.status !== 'trialing' ||
+      vendorSubscription.status !==
+        'trialing' ||
       !vendorSubscription.trial_ends_at
     ) {
       return false
@@ -211,169 +412,201 @@ function App() {
       vendorSubscription.trial_ends_at
     )
 
-    if (Number.isNaN(trialEnds.getTime())) {
+    if (
+      Number.isNaN(
+        trialEnds.getTime()
+      )
+    ) {
       return false
     }
 
-    return trialEnds.getTime() > Date.now()
-  }
-
-  const handleVendorSubscriptionPayment = async () => {
-    if (!user) {
-      setShowAuth(true)
-      return
-    }
-
-    if (!vendorSubscription) {
-      alert(
-        'No vendor subscription was found for this account.'
-      )
-      return
-    }
-
-    if (isTrialStillActive()) {
-      const trialEnds = new Date(
-        vendorSubscription.trial_ends_at
-      )
-
-      alert(
-        `Your free trial is still active until ${trialEnds.toLocaleDateString(
-          undefined,
-          {
-            year: 'numeric',
-            month: 'long',
-            day: 'numeric',
-          }
-        )}.`
-      )
-
-      return
-    }
-
-    if (vendorSubscription.status === 'active') {
-      alert(
-        'Your vendor subscription is already active.'
-      )
-      return
-    }
-
-    setSubscriptionLoading(true)
-
-    try {
-      const {
-        data: { session },
-        error: sessionError,
-      } = await supabase.auth.getSession()
-
-      if (
-        sessionError ||
-        !session ||
-        !session.access_token
-      ) {
-        throw new Error(
-          'Your login session has expired. Please log in again.'
-        )
-      }
-
-      const response = await fetch(
-        '/api/vendor-subscription/initialize',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization:
-              `Bearer ${session.access_token}`,
-          },
-        }
-      )
-
-      let result = null
-
-      try {
-        result = await response.json()
-      } catch {
-        result = null
-      }
-
-      if (!response.ok || !result?.success) {
-        throw new Error(
-          result?.message ||
-            'Unable to initialize subscription payment.'
-        )
-      }
-
-      if (!result.authorization_url) {
-        throw new Error(
-          'Paystack authorization URL was not returned.'
-        )
-      }
-
-      window.location.href =
-        result.authorization_url
-    } catch (error) {
-      console.error(
-        'Subscription payment error:',
-        error
-      )
-
-      alert(
-        error?.message ||
-          'Unable to start subscription payment.'
-      )
-
-      setSubscriptionLoading(false)
-    }
-  }
-
-  const formatSubscriptionDate = (value) => {
-    if (!value) return 'Not available'
-
-    const date = new Date(value)
-
-    if (Number.isNaN(date.getTime())) {
-      return 'Not available'
-    }
-
-    return date.toLocaleDateString(
-      undefined,
-      {
-        year: 'numeric',
-        month: 'long',
-        day: 'numeric',
-      }
+    return (
+      trialEnds.getTime() >
+      Date.now()
     )
   }
 
-  const getSubscriptionStatusText = () => {
-    if (!vendorSubscription) {
-      return 'Subscription information unavailable.'
+  const handleVendorSubscriptionPayment =
+    async () => {
+      if (!user) {
+        showView('auth')
+        return
+      }
+
+      if (!vendorSubscription) {
+        alert(
+          'No vendor subscription was found for this account.'
+        )
+        return
+      }
+
+      if (isTrialStillActive()) {
+        const trialEnds =
+          new Date(
+            vendorSubscription.trial_ends_at
+          )
+
+        alert(
+          `Your free trial is still active until ${trialEnds.toLocaleDateString(
+            undefined,
+            {
+              year: 'numeric',
+              month: 'long',
+              day: 'numeric',
+            }
+          )}.`
+        )
+
+        return
+      }
+
+      if (
+        vendorSubscription.status ===
+        'active'
+      ) {
+        alert(
+          'Your vendor subscription is already active.'
+        )
+        return
+      }
+
+      setSubscriptionLoading(true)
+
+      try {
+        const {
+          data: { session },
+          error: sessionError,
+        } =
+          await supabase.auth.getSession()
+
+        if (
+          sessionError ||
+          !session ||
+          !session.access_token
+        ) {
+          throw new Error(
+            'Your login session has expired. Please log in again.'
+          )
+        }
+
+        const response =
+          await fetch(
+            '/api/vendor-subscription/initialize',
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type':
+                  'application/json',
+                Authorization:
+                  `Bearer ${session.access_token}`,
+              },
+            }
+          )
+
+        let result = null
+
+        try {
+          result =
+            await response.json()
+        } catch {
+          result = null
+        }
+
+        if (
+          !response.ok ||
+          !result?.success
+        ) {
+          throw new Error(
+            result?.message ||
+              'Unable to initialize subscription payment.'
+          )
+        }
+
+        if (
+          !result.authorization_url
+        ) {
+          throw new Error(
+            'Paystack authorization URL was not returned.'
+          )
+        }
+
+        window.location.href =
+          result.authorization_url
+      } catch (error) {
+        console.error(
+          'Subscription payment error:',
+          error
+        )
+
+        alert(
+          error?.message ||
+            'Unable to start subscription payment.'
+        )
+
+        setSubscriptionLoading(false)
+      }
     }
 
-    switch (vendorSubscription.status) {
-      case 'trialing':
-        return isTrialStillActive()
-          ? 'Free trial active'
-          : 'Free trial ended'
+  const formatSubscriptionDate =
+    (value) => {
+      if (!value) {
+        return 'Not available'
+      }
 
-      case 'active':
-        return 'Subscription active'
+      const date =
+        new Date(value)
 
-      case 'past_due':
-        return 'Payment is past due'
+      if (
+        Number.isNaN(
+          date.getTime()
+        )
+      ) {
+        return 'Not available'
+      }
 
-      case 'grace_period':
-        return 'Grace period active'
-
-      case 'expired':
-        return 'Subscription expired'
-
-      case 'cancelled':
-        return 'Subscription cancelled'
-
-      default:
-        return vendorSubscription.status
+      return date.toLocaleDateString(
+        undefined,
+        {
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric',
+        }
+      )
     }
-  }
+
+  const getSubscriptionStatusText =
+    () => {
+      if (!vendorSubscription) {
+        return 'Subscription information unavailable.'
+      }
+
+      switch (
+        vendorSubscription.status
+      ) {
+        case 'trialing':
+          return isTrialStillActive()
+            ? 'Free trial active'
+            : 'Free trial ended'
+
+        case 'active':
+          return 'Subscription active'
+
+        case 'past_due':
+          return 'Payment is past due'
+
+        case 'grace_period':
+          return 'Grace period active'
+
+        case 'expired':
+          return 'Subscription expired'
+
+        case 'cancelled':
+          return 'Subscription cancelled'
+
+        default:
+          return vendorSubscription.status
+      }
+    }
 
   const handleLogout = async () => {
     await supabase.auth.signOut()
@@ -383,45 +616,47 @@ function App() {
     setVendorSubscription(null)
     setIsAdmin(false)
 
-    setShowAuth(false)
-    setShowStore(false)
-    setShowProduct(false)
-    setShowMyProducts(false)
-    setShowMarket(false)
-    setShowCart(false)
-    setShowCheckout(false)
-    setShowOrders(false)
-    setShowVendorOrders(false)
-    setShowPayoutAccount(false)
-    setShowVendorEarnings(false)
-    setShowProfile(false)
-    setShowAdminDashboard(false)
-    setShowRiderDashboard(false)
+    showView('home', false)
+
+    window.history.replaceState(
+      { uniAbujaMarketView: 'home' },
+      '',
+      window.location.pathname +
+        window.location.search
+    )
   }
 
-  const handleStoreCreated = async () => {
-    if (user) {
-      await loadStore(user.id)
+  const handleStoreCreated =
+    async () => {
+      if (user) {
+        await loadStore(
+          user.id
+        )
+      }
+
+      goBack()
     }
 
-    setShowStore(false)
-  }
+  const handleProductCreated =
+    () => {
+      goBack()
+    }
 
-  const handleProductCreated = () => {
-    setShowProduct(false)
-  }
-
-  const handleOrderCreated = () => {
-    setShowCheckout(false)
-    setShowCart(false)
-    setShowOrders(true)
-  }
+  const handleOrderCreated =
+    () => {
+      showView('orders')
+    }
 
   if (loading) {
     return (
       <div className="app-loading">
-        <h2>UniAbuja Market</h2>
-        <p>Loading...</p>
+        <h2>
+          UniAbuja Market
+        </h2>
+
+        <p>
+          Loading...
+        </p>
       </div>
     )
   }
@@ -429,22 +664,13 @@ function App() {
   /*
    * AUTH
    */
+
   if (showAuth) {
     return (
       <Auth
-        onBack={() => {
-          setShowAuth(false)
-
-          if (!user) {
-            setShowRiderDashboard(false)
-          }
-        }}
+        onBack={goBack}
         onLogin={() => {
-          setShowAuth(false)
-
-          if (showRiderDashboard) {
-            setShowRiderDashboard(true)
-          }
+          goBack()
         }}
       />
     )
@@ -453,11 +679,12 @@ function App() {
   /*
    * ADMIN DASHBOARD
    */
+
   if (showAdminDashboard) {
     return (
       <AdminDashboard
         user={user}
-        onBack={() => setShowAdminDashboard(false)}
+        onBack={goBack}
       />
     )
   }
@@ -465,17 +692,23 @@ function App() {
   /*
    * RIDER DASHBOARD
    */
+
   if (showRiderDashboard) {
     if (!user) {
-      setShowAuth(true)
-
-      return null
+      return (
+        <Auth
+          onBack={goBack}
+          onLogin={() => {
+            showView('rider')
+          }}
+        />
+      )
     }
 
     return (
       <RiderDashboard
         user={user}
-        onBack={() => setShowRiderDashboard(false)}
+        onBack={goBack}
       />
     )
   }
@@ -483,11 +716,12 @@ function App() {
   /*
    * PROFILE
    */
+
   if (showProfile) {
     return (
       <Profile
         user={user}
-        onBack={() => setShowProfile(false)}
+        onBack={goBack}
       />
     )
   }
@@ -495,11 +729,12 @@ function App() {
   /*
    * VENDOR EARNINGS
    */
+
   if (showVendorEarnings) {
     return (
       <VendorEarnings
         user={user}
-        onBack={() => setShowVendorEarnings(false)}
+        onBack={goBack}
       />
     )
   }
@@ -507,11 +742,12 @@ function App() {
   /*
    * PAYOUT ACCOUNT
    */
+
   if (showPayoutAccount) {
     return (
       <PayoutAccount
         user={user}
-        onBack={() => setShowPayoutAccount(false)}
+        onBack={goBack}
       />
     )
   }
@@ -519,11 +755,12 @@ function App() {
   /*
    * VENDOR ORDERS
    */
+
   if (showVendorOrders) {
     return (
       <VendorOrders
         user={user}
-        onBack={() => setShowVendorOrders(false)}
+        onBack={goBack}
       />
     )
   }
@@ -531,11 +768,12 @@ function App() {
   /*
    * MY ORDERS
    */
+
   if (showOrders) {
     return (
       <MyOrders
         user={user}
-        onBack={() => setShowOrders(false)}
+        onBack={goBack}
       />
     )
   }
@@ -543,12 +781,15 @@ function App() {
   /*
    * CHECKOUT
    */
+
   if (showCheckout) {
     return (
       <Checkout
         user={user}
-        onBack={() => setShowCheckout(false)}
-        onOrderCreated={handleOrderCreated}
+        onBack={goBack}
+        onOrderCreated={
+          handleOrderCreated
+        }
       />
     )
   }
@@ -556,12 +797,15 @@ function App() {
   /*
    * CART
    */
+
   if (showCart) {
     return (
       <Cart
         user={user}
-        onBack={() => setShowCart(false)}
-        onCheckout={() => setShowCheckout(true)}
+        onBack={goBack}
+        onCheckout={() =>
+          showView('checkout')
+        }
       />
     )
   }
@@ -569,12 +813,15 @@ function App() {
   /*
    * MARKETPLACE
    */
+
   if (showMarket) {
     return (
       <Market
         user={user}
-        onBack={() => setShowMarket(false)}
-        onCart={() => setShowCart(true)}
+        onBack={goBack}
+        onCart={() =>
+          showView('cart')
+        }
       />
     )
   }
@@ -582,14 +829,14 @@ function App() {
   /*
    * MY PRODUCTS
    */
+
   if (showMyProducts) {
     return (
       <MyProducts
         user={user}
-        onBack={() => setShowMyProducts(false)}
+        onBack={goBack}
         onAddProduct={() => {
-          setShowMyProducts(false)
-          setShowProduct(true)
+          showView('product')
         }}
       />
     )
@@ -598,13 +845,16 @@ function App() {
   /*
    * PRODUCT
    */
+
   if (showProduct) {
     return (
       <Product
         user={user}
         store={store}
-        onBack={() => setShowProduct(false)}
-        onProductCreated={handleProductCreated}
+        onBack={goBack}
+        onProductCreated={
+          handleProductCreated
+        }
       />
     )
   }
@@ -612,13 +862,16 @@ function App() {
   /*
    * STORE
    */
+
   if (showStore) {
     return (
       <Store
         user={user}
         store={store}
-        onBack={() => setShowStore(false)}
-        onStoreCreated={handleStoreCreated}
+        onBack={goBack}
+        onStoreCreated={
+          handleStoreCreated
+        }
       />
     )
   }
@@ -626,6 +879,7 @@ function App() {
   /*
    * MAIN FRONT PAGE
    */
+
   return (
     <div className="dashboard-page">
 
@@ -644,15 +898,20 @@ function App() {
         >
 
           {/* NOTIFICATIONS */}
+
           {user && (
-            <Notifications user={user} />
+            <Notifications
+              user={user}
+            />
           )}
 
           {user ? (
             <button
               type="button"
               className="back-button"
-              onClick={handleLogout}
+              onClick={
+                handleLogout
+              }
             >
               Logout
             </button>
@@ -661,7 +920,7 @@ function App() {
               type="button"
               className="back-button"
               onClick={() =>
-                setShowAuth(true)
+                showView('auth')
               }
             >
               Login
@@ -687,14 +946,16 @@ function App() {
           {user ? (
             <p>
               Welcome back,{' '}
-              {user.user_metadata?.full_name ||
+              {user.user_metadata
+                ?.full_name ||
                 user.email}
               .
             </p>
           ) : (
             <p>
-              Shop, sell and discover products from
-              UniAbuja students.
+              Shop, sell and discover
+              products from UniAbuja
+              students.
             </p>
           )}
 
@@ -703,24 +964,31 @@ function App() {
         <div className="dashboard-grid">
 
           {/* ADMIN DASHBOARD */}
+
           {user && isAdmin && (
             <div className="dashboard-card">
 
-              <span>🛡️</span>
+              <span>
+                🛡️
+              </span>
 
               <h3>
                 Admin Dashboard
               </h3>
 
               <p>
-                Manage the marketplace, vendors,
-                orders, products and platform activity.
+                Manage the marketplace,
+                vendors, orders,
+                products and platform
+                activity.
               </p>
 
               <button
                 type="button"
                 onClick={() =>
-                  setShowAdminDashboard(true)
+                  showView(
+                    'admin'
+                  )
                 }
               >
                 Open Admin Dashboard
@@ -730,23 +998,29 @@ function App() {
           )}
 
           {/* MARKETPLACE */}
+
           <div className="dashboard-card">
 
-            <span>🛍️</span>
+            <span>
+              🛍️
+            </span>
 
             <h3>
               Marketplace
             </h3>
 
             <p>
-              Browse products and services available
-              around campus.
+              Browse products and
+              services available around
+              campus.
             </p>
 
             <button
               type="button"
               onClick={() =>
-                setShowMarket(true)
+                showView(
+                  'market'
+                )
               }
             >
               Open Marketplace
@@ -755,28 +1029,35 @@ function App() {
           </div>
 
           {/* DELIVERY PARTNERS */}
+
           <div className="dashboard-card">
 
-            <span>🚴</span>
+            <span>
+              🚴
+            </span>
 
             <h3>
               Delivery Partners
             </h3>
 
             <p>
-              Deliver orders around UniAbuja and
-              nearby areas. Propose different fees
-              for different delivery zones.
+              Deliver orders around
+              UniAbuja and nearby areas.
+              Propose different fees for
+              different delivery zones.
             </p>
 
             <button
               type="button"
               onClick={() => {
                 if (user) {
-                  setShowRiderDashboard(true)
+                  showView(
+                    'rider'
+                  )
                 } else {
-                  setShowRiderDashboard(true)
-                  setShowAuth(true)
+                  showView(
+                    'auth'
+                  )
                 }
               }}
             >
@@ -788,24 +1069,30 @@ function App() {
           </div>
 
           {/* CART */}
+
           {user && (
             <div className="dashboard-card">
 
-              <span>🛒</span>
+              <span>
+                🛒
+              </span>
 
               <h3>
                 My Cart
               </h3>
 
               <p>
-                View your selected products and
-                proceed to checkout.
+                View your selected
+                products and proceed to
+                checkout.
               </p>
 
               <button
                 type="button"
                 onClick={() =>
-                  setShowCart(true)
+                  showView(
+                    'cart'
+                  )
                 }
               >
                 View Cart
@@ -815,19 +1102,25 @@ function App() {
           )}
 
           {/* STORE / VENDOR */}
+
           {user && (
             <div className="dashboard-card">
 
-              <span>🏪</span>
+              <span>
+                🏪
+              </span>
 
               <h3>
                 {!store
                   ? 'Become a Vendor'
-                  : store.status === 'pending'
+                  : store.status ===
+                      'pending'
                     ? 'Application Pending'
-                    : store.status === 'active'
+                    : store.status ===
+                        'active'
                       ? 'My Store'
-                      : store.status === 'rejected'
+                      : store.status ===
+                          'rejected'
                         ? 'Application Not Approved'
                         : 'Store Unavailable'}
               </h3>
@@ -835,11 +1128,14 @@ function App() {
               <p>
                 {!store
                   ? 'Create your store and apply to start selling.'
-                  : store.status === 'pending'
+                  : store.status ===
+                      'pending'
                     ? 'Your vendor application is waiting for admin approval.'
-                    : store.status === 'active'
+                    : store.status ===
+                        'active'
                       ? 'Manage your UniAbuja Market store.'
-                      : store.status === 'rejected'
+                      : store.status ===
+                          'rejected'
                         ? 'Your vendor application was not approved.'
                         : 'Your store is currently unavailable.'}
               </p>
@@ -847,14 +1143,18 @@ function App() {
               <button
                 type="button"
                 onClick={() =>
-                  setShowStore(true)
+                  showView(
+                    'store'
+                  )
                 }
               >
                 {!store
                   ? 'Create Store'
-                  : store.status === 'pending'
+                  : store.status ===
+                      'pending'
                     ? 'View Application'
-                    : store.status === 'active'
+                    : store.status ===
+                        'active'
                       ? 'Manage Store'
                       : 'View Store'}
               </button>
@@ -863,12 +1163,16 @@ function App() {
           )}
 
           {/* VENDOR SUBSCRIPTION */}
+
           {user &&
-            store?.status === 'active' &&
+            store?.status ===
+              'active' &&
             vendorSubscription && (
               <div className="dashboard-card">
 
-                <span>💳</span>
+                <span>
+                  💳
+                </span>
 
                 <h3>
                   Vendor Subscription
@@ -888,6 +1192,7 @@ function App() {
                 </p>
 
                 {/* TRIAL */}
+
                 {vendorSubscription.status ===
                   'trialing' && (
                   <>
@@ -900,8 +1205,9 @@ function App() {
 
                     {isTrialStillActive() ? (
                       <p>
-                        You can continue selling
-                        during your free trial.
+                        You can continue
+                        selling during your
+                        free trial.
                       </p>
                     ) : (
                       <button
@@ -922,6 +1228,7 @@ function App() {
                 )}
 
                 {/* ACTIVE */}
+
                 {vendorSubscription.status ===
                   'active' && (
                   <>
@@ -933,13 +1240,14 @@ function App() {
                     </p>
 
                     <p>
-                      Your vendor subscription is
-                      active.
+                      Your vendor subscription
+                      is active.
                     </p>
                   </>
                 )}
 
                 {/* GRACE PERIOD */}
+
                 {vendorSubscription.status ===
                   'grace_period' && (
                   <>
@@ -967,6 +1275,7 @@ function App() {
                 )}
 
                 {/* PAST DUE */}
+
                 {vendorSubscription.status ===
                   'past_due' && (
                   <button
@@ -985,6 +1294,7 @@ function App() {
                 )}
 
                 {/* EXPIRED */}
+
                 {vendorSubscription.status ===
                   'expired' && (
                   <button
@@ -1003,6 +1313,7 @@ function App() {
                 )}
 
                 {/* CANCELLED */}
+
                 {vendorSubscription.status ===
                   'cancelled' && (
                   <button
@@ -1024,24 +1335,29 @@ function App() {
             )}
 
           {/* ADD PRODUCT */}
+
           {isActiveStore && (
             <div className="dashboard-card">
 
-              <span>➕</span>
+              <span>
+                ➕
+              </span>
 
               <h3>
                 Add Product
               </h3>
 
               <p>
-                Add products to your store for
-                students to discover.
+                Add products to your store
+                for students to discover.
               </p>
 
               <button
                 type="button"
                 onClick={() =>
-                  setShowProduct(true)
+                  showView(
+                    'product'
+                  )
                 }
               >
                 Add Product
@@ -1051,24 +1367,29 @@ function App() {
           )}
 
           {/* MY PRODUCTS */}
+
           {isActiveStore && (
             <div className="dashboard-card">
 
-              <span>📦</span>
+              <span>
+                📦
+              </span>
 
               <h3>
                 My Products
               </h3>
 
               <p>
-                Edit, update or remove products
-                from your store.
+                Edit, update or remove
+                products from your store.
               </p>
 
               <button
                 type="button"
                 onClick={() =>
-                  setShowMyProducts(true)
+                  showView(
+                    'my-products'
+                  )
                 }
               >
                 Manage Products
@@ -1078,10 +1399,13 @@ function App() {
           )}
 
           {/* MY ORDERS */}
+
           {user && (
             <div className="dashboard-card">
 
-              <span>📦</span>
+              <span>
+                📦
+              </span>
 
               <h3>
                 My Orders
@@ -1095,7 +1419,9 @@ function App() {
               <button
                 type="button"
                 onClick={() =>
-                  setShowOrders(true)
+                  showView(
+                    'orders'
+                  )
                 }
               >
                 View My Orders
@@ -1105,10 +1431,13 @@ function App() {
           )}
 
           {/* VENDOR ORDERS */}
+
           {isActiveStore && (
             <div className="dashboard-card">
 
-              <span>📋</span>
+              <span>
+                📋
+              </span>
 
               <h3>
                 Vendor Orders
@@ -1122,7 +1451,9 @@ function App() {
               <button
                 type="button"
                 onClick={() =>
-                  setShowVendorOrders(true)
+                  showView(
+                    'vendor-orders'
+                  )
                 }
               >
                 View Vendor Orders
@@ -1132,10 +1463,13 @@ function App() {
           )}
 
           {/* VENDOR EARNINGS & PAYOUT */}
+
           {isActiveStore && (
             <div className="dashboard-card">
 
-              <span>💰</span>
+              <span>
+                💰
+              </span>
 
               <h3>
                 Earnings & Payouts
@@ -1149,7 +1483,9 @@ function App() {
               <button
                 type="button"
                 onClick={() =>
-                  setShowVendorEarnings(true)
+                  showView(
+                    'vendor-earnings'
+                  )
                 }
               >
                 View Earnings
@@ -1157,9 +1493,13 @@ function App() {
 
               <button
                 type="button"
-                style={{ marginTop: '8px' }}
+                style={{
+                  marginTop: '8px',
+                }}
                 onClick={() =>
-                  setShowPayoutAccount(true)
+                  showView(
+                    'payout-account'
+                  )
                 }
               >
                 Manage Payout Account
@@ -1169,23 +1509,29 @@ function App() {
           )}
 
           {/* PROFILE */}
+
           {user && (
             <div className="dashboard-card">
 
-              <span>👤</span>
+              <span>
+                👤
+              </span>
 
               <h3>
                 Profile
               </h3>
 
               <p>
-                Manage your account information.
+                Manage your account
+                information.
               </p>
 
               <button
                 type="button"
                 onClick={() =>
-                  setShowProfile(true)
+                  showView(
+                    'profile'
+                  )
                 }
               >
                 Open Profile
@@ -1197,6 +1543,7 @@ function App() {
         </div>
 
         {/* PUBLIC LOGIN */}
+
         {!user && (
           <div
             style={{
@@ -1207,7 +1554,9 @@ function App() {
             <button
               type="button"
               onClick={() =>
-                setShowAuth(true)
+                showView(
+                  'auth'
+                )
               }
             >
               Login / Create Account

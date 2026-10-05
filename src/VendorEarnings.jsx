@@ -215,63 +215,78 @@ function VendorEarnings({ onBack }) {
       {/* HEADER */}
       <div
         style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          gap: '12px',
           marginBottom: '24px',
-          flexWrap: 'wrap',
         }}
       >
-        <div>
+        {/* CLEAR BACK TO DASHBOARD BUTTON */}
+        <button
+          type="button"
+          onClick={onBack}
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '8px',
+            minHeight: '46px',
+            padding: '10px 18px',
+            marginBottom: '18px',
+            borderRadius: '10px',
+            border: '1px solid #d9d9d9',
+            background: '#ffffff',
+            color: '#222',
+            cursor: 'pointer',
+            fontSize: '15px',
+            fontWeight: '700',
+            boxShadow:
+              '0 2px 8px rgba(0,0,0,0.08)',
+          }}
+        >
+          ← Back to Dashboard
+        </button>
+
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            gap: '12px',
+            flexWrap: 'wrap',
+          }}
+        >
+          <div>
+            <h2
+              style={{
+                margin: 0,
+                fontSize: '28px',
+              }}
+            >
+              Earnings & Sales
+            </h2>
+
+            <p
+              style={{
+                margin: '6px 0 0',
+                color: '#666',
+              }}
+            >
+              Track your sales, earnings and payouts.
+            </p>
+          </div>
+
           <button
             type="button"
-            onClick={onBack}
+            onClick={loadEarnings}
             style={{
+              padding: '10px 16px',
+              borderRadius: '8px',
               border: 'none',
-              background: 'transparent',
-              padding: '0',
-              marginBottom: '10px',
               cursor: 'pointer',
-              fontSize: '14px',
               fontWeight: '600',
             }}
           >
-            ← Back to Dashboard
+            ↻ Refresh
           </button>
-
-          <h2
-            style={{
-              margin: 0,
-              fontSize: '28px',
-            }}
-          >
-            Earnings & Sales
-          </h2>
-
-          <p
-            style={{
-              margin: '6px 0 0',
-              color: '#666',
-            }}
-          >
-            Track your sales, earnings and payouts.
-          </p>
         </div>
-
-        <button
-          type="button"
-          onClick={loadEarnings}
-          style={{
-            padding: '10px 16px',
-            borderRadius: '8px',
-            border: 'none',
-            cursor: 'pointer',
-            fontWeight: '600',
-          }}
-        >
-          ↻ Refresh
-        </button>
       </div>
 
       {/* ERROR / MESSAGE */}

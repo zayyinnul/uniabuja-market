@@ -22,9 +22,11 @@ function Checkout({ user, onBack, onOrderCreated }) {
   const [quoteLoading, setQuoteLoading] = useState(false)
 
   const [pendingOrderId, setPendingOrderId] = useState(() => {
-    return sessionStorage.getItem(
-      'uniabuja_pending_payment_order'
-    ) || ''
+    return (
+      sessionStorage.getItem(
+        'uniabuja_pending_payment_order'
+      ) || ''
+    )
   })
 
   const submittingRef = useRef(false)
@@ -542,7 +544,7 @@ function Checkout({ user, onBack, onOrderCreated }) {
 
     submittingRef.current = true
     setPlacingOrder(true)
-    setMessage('')
+    setMessage('Creating your order...')
 
     try {
       const {
@@ -623,7 +625,7 @@ function Checkout({ user, onBack, onOrderCreated }) {
     }
 
     setRetryingPayment(true)
-    setMessage('')
+    setMessage('Opening secure payment...')
 
     try {
       await initializePayment(
@@ -644,6 +646,12 @@ function Checkout({ user, onBack, onOrderCreated }) {
     }
   }
 
+  const formatMoney = (amount) => {
+    return `₦${Number(amount || 0).toLocaleString(
+      'en-NG'
+    )}`
+  }
+
   if (loading) {
     return (
       <div className="loading-page">
@@ -651,9 +659,35 @@ function Checkout({ user, onBack, onOrderCreated }) {
           UniAbuja Market
         </h2>
 
+        <div
+          style={{
+            width: '34px',
+            height: '34px',
+            border: '4px solid #e5e7eb',
+            borderTop: '4px solid #16a34a',
+            borderRadius: '50%',
+            animation:
+              'checkoutSpin 0.8s linear infinite',
+            margin: '16px auto',
+          }}
+        />
+
         <p>
-          Loading checkout...
+          Loading your checkout...
         </p>
+
+        <style>
+          {`
+            @keyframes checkoutSpin {
+              from {
+                transform: rotate(0deg);
+              }
+              to {
+                transform: rotate(360deg);
+              }
+            }
+          `}
+        </style>
       </div>
     )
   }
@@ -686,9 +720,16 @@ function Checkout({ user, onBack, onOrderCreated }) {
 
       <main className="checkout-container">
 
+        {/* HEADER */}
+
         <div className="checkout-header">
 
-          <p className="welcome-small">
+          <p
+            className="welcome-small"
+            style={{
+              marginBottom: '6px',
+            }}
+          >
             CHECKOUT
           </p>
 
@@ -697,22 +738,40 @@ function Checkout({ user, onBack, onOrderCreated }) {
           </h1>
 
           <p>
-            Enter your delivery details to continue to payment.
+            Enter your delivery details carefully
+            before proceeding to secure payment.
           </p>
 
         </div>
 
+
+        {/* GENERAL MESSAGE */}
+
         {message && (
-          <div className="auth-message">
+          <div
+            className="auth-message"
+            style={{
+              marginBottom: '18px',
+              lineHeight: '1.5',
+            }}
+          >
             {message}
           </div>
         )}
+
+
+        {/* PENDING PAYMENT */}
 
         {pendingOrderId && (
           <div
             className="market-message"
             style={{
               marginBottom: '20px',
+              border:
+                '1px solid #f0c36d',
+              background:
+                '#fff8e6',
+              textAlign: 'left',
             }}
           >
             <h3>
@@ -720,50 +779,32 @@ function Checkout({ user, onBack, onOrderCreated }) {
             </h3>
 
             <p>
-              You left the payment page before completing payment.
-              You can retry the same payment or go back to your cart.
+              You already have an order waiting for
+              payment. Continue that payment instead
+              of creating another order.
             </p>
 
-            <div
+            <button
+              type="button"
+              className="primary-btn"
+              onClick={
+                handleRetryPayment
+              }
+              disabled={
+                retryingPayment ||
+                placingOrder
+              }
               style={{
-                display: 'flex',
-                gap: '10px',
-                flexWrap: 'wrap',
-                justifyContent: 'center',
+                marginTop: '10px',
               }}
             >
-              <button
-                type="button"
-                className="primary-btn"
-                onClick={
-                  handleRetryPayment
-                }
-                disabled={
-                  retryingPayment ||
-                  placingOrder
-                }
-              >
-                {retryingPayment
-                  ? 'Opening payment...'
-                  : 'Retry Payment'}
-              </button>
-
-              <button
-                type="button"
-                className="back-button"
-                onClick={
-                  handleBack
-                }
-                disabled={
-                  retryingPayment ||
-                  placingOrder
-                }
-              >
-                ← Back to Cart
-              </button>
-            </div>
+              {retryingPayment
+                ? 'Opening payment...'
+                : 'Retry Payment'}
+            </button>
           </div>
         )}
+
 
         {cartItems.length === 0 ? (
 
@@ -799,9 +840,65 @@ function Checkout({ user, onBack, onOrderCreated }) {
 
             <section className="checkout-card">
 
-              <h2>
-                Order summary
-              </h2>
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent:
+                    'space-between',
+                  alignItems:
+                    'center',
+                  gap: '12px',
+                  marginBottom:
+                    '18px',
+                }}
+              >
+
+                <div>
+                  <p
+                    style={{
+                      margin: 0,
+                      fontSize: '12px',
+                      fontWeight: 800,
+                      color: '#16a34a',
+                      letterSpacing:
+                        '0.08em',
+                    }}
+                  >
+                    STEP 1
+                  </p>
+
+                  <h2
+                    style={{
+                      marginTop: '4px',
+                      marginBottom: 0,
+                    }}
+                  >
+                    Order summary
+                  </h2>
+                </div>
+
+                <span
+                  style={{
+                    background:
+                      '#f3f4f6',
+                    padding:
+                      '6px 10px',
+                    borderRadius:
+                      '999px',
+                    fontSize:
+                      '12px',
+                    fontWeight: 700,
+                    whiteSpace:
+                      'nowrap',
+                  }}
+                >
+                  {cartItems.length}{' '}
+                  {cartItems.length === 1
+                    ? 'item'
+                    : 'items'}
+                </span>
+
+              </div>
 
               <div className="checkout-items">
 
@@ -811,24 +908,37 @@ function Checkout({ user, onBack, onOrderCreated }) {
                     <div
                       className="checkout-item"
                       key={item.id}
+                      style={{
+                        alignItems:
+                          'center',
+                      }}
                     >
 
                       <div
                         className="checkout-item-image"
                         style={{
-                          width: '100px',
-                          height: '100px',
-                          minWidth: '100px',
-                          maxWidth: '100px',
-                          minHeight: '100px',
-                          maxHeight: '100px',
-                          flex: '0 0 100px',
-                          overflow: 'hidden',
-                          borderRadius: '10px',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          boxSizing: 'border-box',
+                          width: '88px',
+                          height: '88px',
+                          minWidth: '88px',
+                          maxWidth: '88px',
+                          minHeight: '88px',
+                          maxHeight: '88px',
+                          flex:
+                            '0 0 88px',
+                          overflow:
+                            'hidden',
+                          borderRadius:
+                            '12px',
+                          display:
+                            'flex',
+                          alignItems:
+                            'center',
+                          justifyContent:
+                            'center',
+                          boxSizing:
+                            'border-box',
+                          background:
+                            '#f3f4f6',
                         }}
                       >
 
@@ -842,20 +952,33 @@ function Checkout({ user, onBack, onOrderCreated }) {
                               item.products.name
                             }
                             style={{
-                              width: '100%',
-                              height: '100%',
-                              minWidth: '100%',
-                              minHeight: '100%',
-                              maxWidth: '100%',
-                              maxHeight: '100%',
-                              objectFit: 'cover',
-                              display: 'block',
+                              width:
+                                '100%',
+                              height:
+                                '100%',
+                              minWidth:
+                                '100%',
+                              minHeight:
+                                '100%',
+                              maxWidth:
+                                '100%',
+                              maxHeight:
+                                '100%',
+                              objectFit:
+                                'cover',
+                              display:
+                                'block',
                             }}
                           />
 
                         ) : (
 
-                          <span>
+                          <span
+                            style={{
+                              fontSize:
+                                '26px',
+                            }}
+                          >
                             🛍️
                           </span>
 
@@ -863,7 +986,12 @@ function Checkout({ user, onBack, onOrderCreated }) {
 
                       </div>
 
-                      <div className="checkout-item-info">
+                      <div
+                        className="checkout-item-info"
+                        style={{
+                          minWidth: 0,
+                        }}
+                      >
 
                         <h3>
                           {item.products?.name ||
@@ -871,22 +999,38 @@ function Checkout({ user, onBack, onOrderCreated }) {
                         </h3>
 
                         <p>
-                          Quantity: {
-                            item.quantity
-                          }
+                          Quantity:{' '}
+                          {item.quantity}
+                        </p>
+
+                        <p
+                          style={{
+                            fontWeight: 700,
+                            marginTop:
+                              '3px',
+                          }}
+                        >
+                          {formatMoney(
+                            item.products?.price
+                          )}{' '}
+                          each
                         </p>
 
                       </div>
 
-                      <strong>
-                        ₦
-                        {(
+                      <strong
+                        style={{
+                          whiteSpace:
+                            'nowrap',
+                        }}
+                      >
+                        {formatMoney(
                           Number(
                             item.products?.price ||
                               0
                           ) *
-                          item.quantity
-                        ).toLocaleString()}
+                            item.quantity
+                        )}
                       </strong>
 
                     </div>
@@ -896,62 +1040,134 @@ function Checkout({ user, onBack, onOrderCreated }) {
 
               </div>
 
-              <div className="checkout-total">
 
-                <span>
-                  Products
-                </span>
-
-                <strong>
-                  ₦
-                  {productTotal.toLocaleString()}
-                </strong>
-
-              </div>
+              {/* TOTAL BREAKDOWN */}
 
               <div
-                className="checkout-total"
                 style={{
-                  marginTop: '8px',
-                }}
-              >
-
-                <span>
-                  Delivery
-                </span>
-
-                <strong>
-                  {!selectedZoneId
-                    ? 'Select area'
-                    : quoteLoading
-                    ? 'Calculating...'
-                    : deliveryFee === 0
-                    ? '🎉 Free delivery'
-                    : `₦${deliveryFee.toLocaleString()}`}
-                </strong>
-
-              </div>
-
-              <div
-                className="checkout-total"
-                style={{
-                  marginTop: '8px',
-                  paddingTop: '12px',
+                  marginTop: '20px',
+                  paddingTop: '16px',
                   borderTop:
-                    '1px solid #ddd',
+                    '1px solid #e5e7eb',
                 }}
               >
 
-                <span>
-                  <strong>
-                    Total
-                  </strong>
-                </span>
+                <div
+                  className="checkout-total"
+                >
+                  <span>
+                    Products
+                  </span>
 
-                <strong>
-                  ₦
-                  {checkoutTotal.toLocaleString()}
-                </strong>
+                  <strong>
+                    {formatMoney(
+                      productTotal
+                    )}
+                  </strong>
+                </div>
+
+                <div
+                  className="checkout-total"
+                  style={{
+                    marginTop: '8px',
+                  }}
+                >
+                  <span>
+                    Delivery
+                  </span>
+
+                  <strong>
+                    {!selectedZoneId
+                      ? 'Select area'
+                      : quoteLoading
+                      ? 'Calculating...'
+                      : deliveryFee ===
+                        0
+                      ? '🎉 Free delivery'
+                      : formatMoney(
+                          deliveryFee
+                        )}
+                  </strong>
+                </div>
+
+
+                <div
+                  style={{
+                    marginTop:
+                      '14px',
+                    paddingTop:
+                      '14px',
+                    borderTop:
+                      '2px solid #111827',
+                    display: 'flex',
+                    alignItems:
+                      'center',
+                    justifyContent:
+                      'space-between',
+                    gap: '15px',
+                  }}
+                >
+
+                  <div>
+                    <span
+                      style={{
+                        display:
+                          'block',
+                        fontSize:
+                          '12px',
+                        fontWeight:
+                          800,
+                        color:
+                          '#6b7280',
+                        textTransform:
+                          'uppercase',
+                        letterSpacing:
+                          '0.05em',
+                      }}
+                    >
+                      Total to pay
+                    </span>
+
+                    <strong
+                      style={{
+                        display:
+                          'block',
+                        marginTop:
+                          '3px',
+                        fontSize:
+                          '24px',
+                        color:
+                          '#111827',
+                      }}
+                    >
+                      {formatMoney(
+                        checkoutTotal
+                      )}
+                    </strong>
+                  </div>
+
+                  <span
+                    style={{
+                      background:
+                        '#dcfce7',
+                      color:
+                        '#166534',
+                      padding:
+                        '7px 10px',
+                      borderRadius:
+                        '999px',
+                      fontSize:
+                        '11px',
+                      fontWeight:
+                        800,
+                      whiteSpace:
+                        'nowrap',
+                    }}
+                  >
+                    SECURE PAYMENT
+                  </span>
+
+                </div>
 
               </div>
 
@@ -962,9 +1178,54 @@ function Checkout({ user, onBack, onOrderCreated }) {
 
             <section className="checkout-card">
 
-              <h2>
-                Delivery details
-              </h2>
+              <div
+                style={{
+                  marginBottom:
+                    '20px',
+                }}
+              >
+
+                <p
+                  style={{
+                    margin: 0,
+                    fontSize: '12px',
+                    fontWeight: 800,
+                    color: '#16a34a',
+                    letterSpacing:
+                      '0.08em',
+                  }}
+                >
+                  STEP 2
+                </p>
+
+                <h2
+                  style={{
+                    marginTop:
+                      '4px',
+                    marginBottom:
+                      '5px',
+                  }}
+                >
+                  Delivery details
+                </h2>
+
+                <p
+                  style={{
+                    margin: 0,
+                    color:
+                      '#6b7280',
+                    fontSize:
+                      '14px',
+                    lineHeight:
+                      '1.5',
+                  }}
+                >
+                  Enter clear details so your order
+                  reaches the correct person and place.
+                </p>
+
+              </div>
+
 
               <form
                 onSubmit={
@@ -972,8 +1233,29 @@ function Checkout({ user, onBack, onOrderCreated }) {
                 }
               >
 
-                <label>
+                {/* FULL NAME */}
+
+                <label
+                  style={{
+                    display:
+                      'block',
+                    fontWeight:
+                      800,
+                    color:
+                      '#111827',
+                    marginBottom:
+                      '7px',
+                  }}
+                >
                   Full name
+                  <span
+                    style={{
+                      color:
+                        '#dc2626',
+                    }}
+                  >
+                    {' '}*
+                  </span>
                 </label>
 
                 <input
@@ -989,13 +1271,74 @@ function Checkout({ user, onBack, onOrderCreated }) {
                   disabled={
                     placingOrder ||
                     retryingPayment ||
-                    Boolean(pendingOrderId)
+                    Boolean(
+                      pendingOrderId
+                    )
                   }
+                  autoComplete="name"
+                  style={{
+                    width:
+                      '100%',
+                    boxSizing:
+                      'border-box',
+                    fontSize:
+                      '16px',
+                    fontWeight:
+                      600,
+                    color:
+                      '#111827',
+                    background:
+                      '#fff',
+                    border:
+                      '2px solid #d1d5db',
+                    borderRadius:
+                      '10px',
+                    padding:
+                      '13px 14px',
+                    marginBottom:
+                      '5px',
+                    outline:
+                      'none',
+                  }}
                 />
 
+                <p
+                  style={{
+                    margin:
+                      '0 0 17px',
+                    color:
+                      '#6b7280',
+                    fontSize:
+                      '12px',
+                  }}
+                >
+                  Name of the person receiving the order.
+                </p>
 
-                <label>
+
+                {/* PHONE */}
+
+                <label
+                  style={{
+                    display:
+                      'block',
+                    fontWeight:
+                      800,
+                    color:
+                      '#111827',
+                    marginBottom:
+                      '7px',
+                  }}
+                >
                   Phone number
+                  <span
+                    style={{
+                      color:
+                        '#dc2626',
+                    }}
+                  >
+                    {' '}*
+                  </span>
                 </label>
 
                 <input
@@ -1011,17 +1354,81 @@ function Checkout({ user, onBack, onOrderCreated }) {
                   disabled={
                     placingOrder ||
                     retryingPayment ||
-                    Boolean(pendingOrderId)
+                    Boolean(
+                      pendingOrderId
+                    )
                   }
+                  autoComplete="tel"
+                  inputMode="tel"
+                  style={{
+                    width:
+                      '100%',
+                    boxSizing:
+                      'border-box',
+                    fontSize:
+                      '16px',
+                    fontWeight:
+                      600,
+                    color:
+                      '#111827',
+                    background:
+                      '#fff',
+                    border:
+                      '2px solid #d1d5db',
+                    borderRadius:
+                      '10px',
+                    padding:
+                      '13px 14px',
+                    marginBottom:
+                      '5px',
+                    outline:
+                      'none',
+                  }}
                 />
 
+                <p
+                  style={{
+                    margin:
+                      '0 0 17px',
+                    color:
+                      '#6b7280',
+                    fontSize:
+                      '12px',
+                  }}
+                >
+                  Use a number the delivery person can reach.
+                </p>
 
-                <label>
+
+                {/* DELIVERY AREA */}
+
+                <label
+                  style={{
+                    display:
+                      'block',
+                    fontWeight:
+                      800,
+                    color:
+                      '#111827',
+                    marginBottom:
+                      '7px',
+                  }}
+                >
                   Delivery area
+                  <span
+                    style={{
+                      color:
+                        '#dc2626',
+                    }}
+                  >
+                    {' '}*
+                  </span>
                 </label>
 
                 <select
-                  value={selectedZoneId}
+                  value={
+                    selectedZoneId
+                  }
                   onChange={
                     handleZoneChange
                   }
@@ -1029,17 +1436,34 @@ function Checkout({ user, onBack, onOrderCreated }) {
                   disabled={
                     placingOrder ||
                     retryingPayment ||
-                    Boolean(pendingOrderId) ||
+                    Boolean(
+                      pendingOrderId
+                    ) ||
                     zones.length === 0
                   }
                   style={{
-                    width: '100%',
-                    padding: '12px',
-                    borderRadius: '8px',
+                    width:
+                      '100%',
+                    boxSizing:
+                      'border-box',
+                    fontSize:
+                      '16px',
+                    fontWeight:
+                      600,
+                    color:
+                      '#111827',
+                    background:
+                      '#fff',
                     border:
-                      '1px solid #ddd',
-                    marginBottom: '16px',
-                    background: '#fff',
+                      '2px solid #d1d5db',
+                    borderRadius:
+                      '10px',
+                    padding:
+                      '13px 14px',
+                    marginBottom:
+                      '5px',
+                    outline:
+                      'none',
                   }}
                 >
 
@@ -1060,103 +1484,322 @@ function Checkout({ user, onBack, onOrderCreated }) {
 
                 </select>
 
+                <p
+                  style={{
+                    margin:
+                      '0 0 17px',
+                    color:
+                      '#6b7280',
+                    fontSize:
+                      '12px',
+                  }}
+                >
+                  Your delivery fee is calculated from this area.
+                </p>
 
-                <label>
+
+                {/* DELIVERY ADDRESS */}
+
+                <label
+                  style={{
+                    display:
+                      'block',
+                    fontWeight:
+                      800,
+                    color:
+                      '#111827',
+                    marginBottom:
+                      '7px',
+                  }}
+                >
                   Delivery address
+                  <span
+                    style={{
+                      color:
+                        '#dc2626',
+                    }}
+                  >
+                    {' '}*
+                  </span>
                 </label>
 
                 <textarea
                   placeholder="Enter your full delivery address"
-                  value={deliveryAddress}
+                  value={
+                    deliveryAddress
+                  }
                   onChange={(e) =>
                     setDeliveryAddress(
                       e.target.value
                     )
                   }
-                  rows="4"
+                  rows="5"
                   required
                   disabled={
                     placingOrder ||
                     retryingPayment ||
-                    Boolean(pendingOrderId)
+                    Boolean(
+                      pendingOrderId
+                    )
                   }
+                  autoComplete="street-address"
+                  style={{
+                    width:
+                      '100%',
+                    boxSizing:
+                      'border-box',
+                    fontSize:
+                      '16px',
+                    fontWeight:
+                      600,
+                    lineHeight:
+                      '1.5',
+                    color:
+                      '#111827',
+                    background:
+                      '#fff',
+                    border:
+                      '2px solid #d1d5db',
+                    borderRadius:
+                      '10px',
+                    padding:
+                      '13px 14px',
+                    marginBottom:
+                      '7px',
+                    outline:
+                      'none',
+                    resize:
+                      'vertical',
+                  }}
                 />
-
-
-                <label>
-                  Delivery method
-                </label>
 
                 <div
                   style={{
-                    display: 'grid',
-                    gap: '10px',
-                    marginBottom: '20px',
+                    background:
+                      '#f9fafb',
+                    border:
+                      '1px solid #e5e7eb',
+                    borderRadius:
+                      '10px',
+                    padding:
+                      '10px 12px',
+                    marginBottom:
+                      '20px',
+                  }}
+                >
+                  <p
+                    style={{
+                      margin: 0,
+                      fontSize:
+                        '12px',
+                      lineHeight:
+                        '1.5',
+                      fontWeight:
+                        600,
+                      color:
+                        '#4b5563',
+                    }}
+                  >
+                    💡 Be specific. Example:
+                    “Male Hostel B, Block 3,
+                    Room 214, near the main staircase.”
+                  </p>
+                </div>
+
+
+                {/* DELIVERY METHOD */}
+
+                <label
+                  style={{
+                    display:
+                      'block',
+                    fontWeight:
+                      800,
+                    color:
+                      '#111827',
+                    marginBottom:
+                      '8px',
+                  }}
+                >
+                  Delivery method
+                </label>
+
+                <button
+                  type="button"
+                  onClick={() =>
+                    handleDeliveryMethodChange(
+                      'vendor'
+                    )
+                  }
+                  disabled={
+                    placingOrder ||
+                    retryingPayment ||
+                    Boolean(
+                      pendingOrderId
+                    ) ||
+                    !selectedZoneId
+                  }
+                  style={{
+                    width:
+                      '100%',
+                    padding:
+                      '15px',
+                    textAlign:
+                      'left',
+                    border:
+                      deliveryMethod ===
+                      'vendor'
+                        ? '2px solid #16a34a'
+                        : '2px solid #d1d5db',
+                    borderRadius:
+                      '12px',
+                    background:
+                      deliveryMethod ===
+                      'vendor'
+                        ? '#f0fdf4'
+                        : '#fff',
+                    cursor:
+                      selectedZoneId
+                        ? 'pointer'
+                        : 'not-allowed',
+                    marginBottom:
+                      '20px',
                   }}
                 >
 
-                  {/* VENDOR DELIVERY */}
-
-                  <button
-                    type="button"
-                    onClick={() =>
-                      handleDeliveryMethodChange(
-                        'vendor'
-                      )
-                    }
-                    disabled={
-                      placingOrder ||
-                      retryingPayment ||
-                      Boolean(pendingOrderId) ||
-                      !selectedZoneId
-                    }
+                  <strong
                     style={{
-                      padding: '14px',
-                      textAlign: 'left',
-                      border:
-                        deliveryMethod ===
-                        'vendor'
-                          ? '2px solid #111'
-                          : '1px solid #ddd',
-                      borderRadius: '10px',
-                      background:
-                        deliveryMethod ===
-                        'vendor'
-                          ? '#f5f5f5'
-                          : '#fff',
-                      cursor:
-                        selectedZoneId
-                          ? 'pointer'
-                          : 'not-allowed',
+                      display:
+                        'block',
+                      color:
+                        '#111827',
+                      fontSize:
+                        '15px',
+                    }}
+                  >
+                    🏪 Vendor delivery
+                  </strong>
+
+                  <span
+                    style={{
+                      display:
+                        'block',
+                      marginTop:
+                        '4px',
+                      color:
+                        '#4b5563',
+                      fontSize:
+                        '13px',
+                    }}
+                  >
+                    Delivered by the vendor.
+                  </span>
+
+                  <strong
+                    style={{
+                      display:
+                        'block',
+                      marginTop:
+                        '7px',
+                      color:
+                        '#166534',
+                    }}
+                  >
+                    {!selectedZoneId
+                      ? 'Select area first'
+                      : quoteLoading
+                      ? 'Calculating delivery...'
+                      : deliveryFee ===
+                        0
+                      ? '🎉 Free delivery'
+                      : formatMoney(
+                          deliveryFee
+                        )}
+                  </strong>
+
+                </button>
+
+
+                {/* FINAL TOTAL */}
+
+                <div
+                  style={{
+                    background:
+                      '#111827',
+                    color:
+                      '#fff',
+                    borderRadius:
+                      '12px',
+                    padding:
+                      '16px',
+                    marginBottom:
+                      '12px',
+                  }}
+                >
+
+                  <div
+                    style={{
+                      display:
+                        'flex',
+                      alignItems:
+                        'center',
+                      justifyContent:
+                        'space-between',
+                      gap:
+                        '12px',
                     }}
                   >
 
-                    <strong>
-                      🏪 Vendor delivery
-                    </strong>
+                    <div>
+                      <span
+                        style={{
+                          display:
+                            'block',
+                          fontSize:
+                            '11px',
+                          fontWeight:
+                            800,
+                          color:
+                            '#d1d5db',
+                          textTransform:
+                            'uppercase',
+                          letterSpacing:
+                            '0.05em',
+                        }}
+                      >
+                        Amount to pay
+                      </span>
 
-                    <br />
+                      <strong
+                        style={{
+                          display:
+                            'block',
+                          marginTop:
+                            '3px',
+                          fontSize:
+                            '24px',
+                        }}
+                      >
+                        {formatMoney(
+                          checkoutTotal
+                        )}
+                      </strong>
+                    </div>
 
-                    <span>
-                      Delivered by the vendor
+                    <span
+                      style={{
+                        fontSize:
+                          '12px',
+                        fontWeight:
+                          800,
+                        color:
+                          '#86efac',
+                      }}
+                    >
+                      PAYSTACK
                     </span>
 
-                    <br />
-
-                    <strong>
-                      {!selectedZoneId
-                        ? 'Select area'
-                        : deliveryMethod ===
-                          'vendor'
-                        ? quoteLoading
-                          ? 'Calculating...'
-                          : deliveryFee === 0
-                          ? '🎉 Free delivery'
-                          : `₦${deliveryFee.toLocaleString()}`
-                        : '—'}
-                    </strong>
-
-                  </button>
+                  </div>
 
                 </div>
 
@@ -1172,15 +1815,47 @@ function Checkout({ user, onBack, onOrderCreated }) {
                       !selectedZoneId ||
                       checkoutTotal <= 0
                     }
+                    style={{
+                      width:
+                        '100%',
+                      minHeight:
+                        '52px',
+                      fontSize:
+                        '16px',
+                      fontWeight:
+                        800,
+                    }}
                   >
                     {placingOrder
-                      ? 'Preparing payment...'
+                      ? 'Preparing secure payment...'
                       : quoteLoading
                       ? 'Calculating delivery...'
                       : !selectedZoneId
                       ? 'Select delivery area'
-                      : 'Proceed to Payment'}
+                      : `Proceed to Payment • ${formatMoney(
+                          checkoutTotal
+                        )}`}
                   </button>
+                )}
+
+                {!pendingOrderId && (
+                  <p
+                    style={{
+                      margin:
+                        '10px 0 0',
+                      textAlign:
+                        'center',
+                      color:
+                        '#6b7280',
+                      fontSize:
+                        '12px',
+                      lineHeight:
+                        '1.5',
+                    }}
+                  >
+                    You will be redirected to Paystack
+                    to complete your payment securely.
+                  </p>
                 )}
 
               </form>

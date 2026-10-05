@@ -23,25 +23,65 @@ function jsonResponse(data, status = 200, extraHeaders = {}) {
   })
 }
 
-function htmlResponse(html, status = 200) {
-  return new Response(html, {
-    status,
-    headers: {
-      'Content-Type': 'text/html; charset=UTF-8',
-    },
-  })
+function getAppUrl(env, request) {
+  return (
+    env.APP_URL ||
+    new URL(request.url).origin
+  ).replace(/\/+$/, '')
 }
 
-async function getAuthenticatedUser(request, env) {
-  const authHeader =
-    request.headers.get('Authorization')
+async function supabaseRequest(
+  env,
+  path,
+  options = {}
+) {
+  return fetch(
+    `${env.SUPABASE_URL}${path}`,
+    {
+      ...options,
+      headers: {
+        apikey:
+          env.SUPABASE_SERVICE_ROLE_KEY ||
+          env.SUPABASE_PUBLISHABLE_KEY,
+        Authorization:
+          `Bearer ${
+            env.SUPABASE_SERVICE_ROLE_KEY ||
+            env.SUPABASE_PUBLISHABLE_KEY
+          }`,
+        ...options.headers,
+      },
+    }
+  )
+}
 
-  if (!authHeader?.startsWith('Bearer ')) {
+async function getAuthenticatedUser(
+  request,
+  env
+) {
+  const authHeader =
+    request.headers.get(
+      'Authorization'
+    )
+
+  if (
+    !authHeader?.startsWith(
+      'Bearer '
+    )
+  ) {
     return null
   }
 
   const accessToken =
-    authHeader.replace('Bearer ', '').trim()
+    authHeader
+      .replace(
+        'Bearer ',
+        ''
+      )
+      .trim()
+
+  if (!accessToken) {
+    return null
+  }
 
   const response =
     await fetch(
@@ -61,33 +101,11 @@ async function getAuthenticatedUser(request, env) {
     return null
   }
 
-  return await response.json()
-}
-
-// ---------------------------------------------------------
-// SUPABASE SERVICE-ROLE HELPERS
-// ---------------------------------------------------------
-
-async function supabaseRequest(
-  env,
-  path,
-  options = {}
-) {
-  const headers = {
-    apikey:
-      env.SUPABASE_SECRET_KEY,
-    Authorization:
-      `Bearer ${env.SUPABASE_SECRET_KEY}`,
-    ...options.headers,
+  try {
+    return await response.json()
+  } catch {
+    return null
   }
-
-  return fetch(
-    `${env.SUPABASE_URL}${path}`,
-    {
-      ...options,
-      headers,
-    }
-  )
 }
 
 async function updateVendorPayout(
@@ -118,1202 +136,14 @@ async function updateVendorPayout(
     )
 
   if (!response.ok) {
-    const errorText =
-      await response.text()
-
     console.error(
-      'Could not update vendor payout:',
-      errorText
-    )
-
-    throw new Error(
-      'Could not update vendor payout'
-    )
-  }
-}
-
-// ---------------------------------------------------------
-// VENDOR SUBSCRIPTION HELPERS
-// ---------------------------------------------------------
-
-function parseMetadata(metadata) {
-  if (!metadata) {
-    return {}
-  }
-
-  if (
-    typeof metadata ===
-    'object'
-  ) {
-    return metadata
-  }
-
-  if (
-    typeof metadata ===
-    'string'
-  ) {
-    try {
-      return JSON.parse(metadata)
-    } catch {
-      return {}
-    }
-  }
-
-  return {}
-}
-
-function addDays(date, days) {
-  const result =
-    new Date(date)
-
-  result.setUTCDate(
-    result.getUTCDate() + days
-  )
-
-  return result.toISOString()
-}
-
-function addOneMonth(date) {
-  const result =
-    new Date(date)
-
-  result.setUTCMonth(
-    result.getUTCMonth() + 1
-  )
-
-  return result.toISOString()
-}
-
-async function getVendorSubscriptionById(
-  env,
-  subscriptionId
-) {
-  if (!subscriptionId) {
-    return null
-  }
-
-  const response =
-    await supabaseRequest(
-      env,
-      `/rest/v1/vendor_subscriptions?id=eq.${encodeURIComponent(
-        subscriptionId
-      )}&select=*&limit=1`,
-      {
-        method: 'GET',
-      }
-    )
-
-  if (!response.ok) {
-    console.error(
-      'Could not load vendor subscription by id:',
+      `Could not update vendor payout ${payoutId}:`,
       await response.text()
     )
-
-    return null
   }
 
-  const data =
-    await response.json()
-
-  return Array.isArray(data) &&
-    data.length
-    ? data[0]
-    : null
+  return response
 }
-
-async function getVendorSubscriptionByVendorId(
-  env,
-  vendorId
-) {
-  if (!vendorId) {
-    return null
-  }
-
-  const response =
-    await supabaseRequest(
-      env,
-      `/rest/v1/vendor_subscriptions?vendor_id=eq.${encodeURIComponent(
-        vendorId
-      )}&select=*&limit=1`,
-      {
-        method: 'GET',
-      }
-    )
-
-  if (!response.ok) {
-    console.error(
-      'Could not load vendor subscription by vendor id:',
-      await response.text()
-    )
-
-    return null
-  }
-
-  const data =
-    await response.json()
-
-  return Array.isArray(data) &&
-    data.length
-    ? data[0]
-    : null
-}
-
-async function getVendorSubscriptionBySubscriptionCode(
-  env,
-  subscriptionCode
-) {
-  if (!subscriptionCode) {
-    return null
-  }
-
-  const response =
-    await supabaseRequest(
-      env,
-      `/rest/v1/vendor_subscriptions?paystack_subscription_code=eq.${encodeURIComponent(
-        subscriptionCode
-      )}&select=*&limit=1`,
-      {
-        method: 'GET',
-      }
-    )
-
-  if (!response.ok) {
-    console.error(
-      'Could not load vendor subscription by Paystack subscription code:',
-      await response.text()
-    )
-
-    return null
-  }
-
-  const data =
-    await response.json()
-
-  return Array.isArray(data) &&
-    data.length
-    ? data[0]
-    : null
-}
-
-async function getVendorSubscriptionByCustomerCode(
-  env,
-  customerCode
-) {
-  if (!customerCode) {
-    return null
-  }
-
-  const response =
-    await supabaseRequest(
-      env,
-      `/rest/v1/vendor_subscriptions?paystack_customer_code=eq.${encodeURIComponent(
-        customerCode
-      )}&select=*&limit=1`,
-      {
-        method: 'GET',
-      }
-    )
-
-  if (!response.ok) {
-    console.error(
-      'Could not load vendor subscription by Paystack customer code:',
-      await response.text()
-    )
-
-    return null
-  }
-
-  const data =
-    await response.json()
-
-  return Array.isArray(data) &&
-    data.length
-    ? data[0]
-    : null
-}
-
-async function findVendorSubscription(
-  env,
-  {
-    subscriptionId = null,
-    vendorId = null,
-    subscriptionCode = null,
-    customerCode = null,
-  } = {}
-) {
-  let subscription = null
-
-  if (subscriptionId) {
-    subscription =
-      await getVendorSubscriptionById(
-        env,
-        subscriptionId
-      )
-
-    if (subscription) {
-      return subscription
-    }
-  }
-
-  if (vendorId) {
-    subscription =
-      await getVendorSubscriptionByVendorId(
-        env,
-        vendorId
-      )
-
-    if (subscription) {
-      return subscription
-    }
-  }
-
-  if (subscriptionCode) {
-    subscription =
-      await getVendorSubscriptionBySubscriptionCode(
-        env,
-        subscriptionCode
-      )
-
-    if (subscription) {
-      return subscription
-    }
-  }
-
-  if (customerCode) {
-    subscription =
-      await getVendorSubscriptionByCustomerCode(
-        env,
-        customerCode
-      )
-
-    if (subscription) {
-      return subscription
-    }
-  }
-
-  return null
-}
-
-async function updateVendorSubscription(
-  env,
-  subscriptionId,
-  updates
-) {
-  if (!subscriptionId) {
-    throw new Error(
-      'Vendor subscription id is required'
-    )
-  }
-
-  const response =
-    await supabaseRequest(
-      env,
-      `/rest/v1/vendor_subscriptions?id=eq.${encodeURIComponent(
-        subscriptionId
-      )}`,
-      {
-        method: 'PATCH',
-        headers: {
-          'Content-Type':
-            'application/json',
-          Prefer:
-            'return=minimal',
-        },
-        body: JSON.stringify({
-          ...updates,
-          updated_at:
-            new Date().toISOString(),
-        }),
-      }
-    )
-
-  if (!response.ok) {
-    const errorText =
-      await response.text()
-
-    console.error(
-      `Could not update vendor subscription ${subscriptionId}:`,
-      errorText
-    )
-
-    throw new Error(
-      'Could not update vendor subscription'
-    )
-  }
-}
-
-async function resolvePaystackSubscriptionFromTransaction(
-  env,
-  reference
-) {
-  if (!reference) {
-    return null
-  }
-
-  try {
-    const response =
-      await fetch(
-        `https://api.paystack.co/transaction/verify/${encodeURIComponent(
-          reference
-        )}`,
-        {
-          method: 'GET',
-          headers: {
-            Authorization:
-              `Bearer ${env.PAYSTACK_SECRET_KEY}`,
-          },
-        }
-      )
-
-    if (!response.ok) {
-      return null
-    }
-
-    const data =
-      await response.json()
-
-    if (
-      !data?.status ||
-      !data?.data
-    ) {
-      return null
-    }
-
-    return data.data
-  } catch (error) {
-    console.error(
-      'Could not verify Paystack transaction while resolving subscription:',
-      error
-    )
-
-    return null
-  }
-}
-
-async function handleVendorSubscriptionWebhook(
-  env,
-  event
-) {
-  const eventName =
-    event?.event
-
-  const data =
-    event?.data || {}
-
-  const metadata =
-    parseMetadata(
-      data?.metadata
-    )
-
-  const subscriptionObject =
-    data?.subscription || {}
-
-  const customerObject =
-    data?.customer || {}
-
-  let subscriptionCode =
-    subscriptionObject?.subscription_code ||
-    data?.subscription_code ||
-    null
-
-  let customerCode =
-    customerObject?.customer_code ||
-    data?.customer_code ||
-    null
-
-  let vendorId =
-    metadata?.vendor_id ||
-    null
-
-  let subscriptionId =
-    metadata?.subscription_id ||
-    null
-
-  let subscription =
-    await findVendorSubscription(
-      env,
-      {
-        subscriptionId,
-        vendorId,
-        subscriptionCode,
-        customerCode,
-      }
-    )
-
-  // -------------------------------------------------------
-  // PAYSTACK TRANSACTION FALLBACK
-  //
-  // This is intentionally available for every vendor
-  // subscription event, not only subscription.create.
-  //
-  // If subscription.create was missed or delivered before
-  // the database codes were saved, a later charge.success
-  // can still recover the vendor/subscription using the
-  // original transaction metadata.
-  // -------------------------------------------------------
-
-  if (!subscription) {
-    const transactionReference =
-      data?.transaction?.reference ||
-      data?.transaction_reference ||
-      data?.reference ||
-      null
-
-    if (transactionReference) {
-      const transaction =
-        await resolvePaystackSubscriptionFromTransaction(
-          env,
-          transactionReference
-        )
-
-      if (transaction) {
-        const transactionMetadata =
-          parseMetadata(
-            transaction.metadata
-          )
-
-        vendorId =
-          vendorId ||
-          transactionMetadata?.vendor_id ||
-          null
-
-        subscriptionId =
-          subscriptionId ||
-          transactionMetadata?.subscription_id ||
-          null
-
-        subscriptionCode =
-          subscriptionCode ||
-          transaction?.subscription?.subscription_code ||
-          transaction?.subscription_code ||
-          null
-
-        customerCode =
-          customerCode ||
-          transaction?.customer?.customer_code ||
-          transaction?.customer_code ||
-          null
-
-        subscription =
-          await findVendorSubscription(
-            env,
-            {
-              subscriptionId,
-              vendorId,
-              subscriptionCode,
-              customerCode,
-            }
-          )
-      }
-    }
-  }
-
-  // -------------------------------------------------------
-  // ADDITIONAL VENDOR SUBSCRIPTION IDENTIFICATION
-  // -------------------------------------------------------
-
-  const explicitlyVendorSubscription =
-    metadata?.purpose ===
-    'vendor_subscription'
-
-  // A normal order payment must never be treated as a
-  // vendor subscription.
-  if (
-    !subscription &&
-    !explicitlyVendorSubscription
-  ) {
-    return {
-      handled: false,
-      reason:
-        'Not a vendor subscription event',
-    }
-  }
-
-  // If this is explicitly a vendor subscription but
-  // the database record cannot be found, log it.
-  if (!subscription) {
-    console.warn(
-      'Could not match Paystack event to a vendor subscription:',
-      JSON.stringify({
-        event:
-          eventName,
-        vendorId,
-        subscriptionId,
-        subscriptionCode,
-        customerCode,
-      })
-    )
-
-    return {
-      handled: false,
-      reason:
-        'Vendor subscription not found',
-    }
-  }
-
-  const now =
-    new Date().toISOString()
-
-  // -------------------------------------------------------
-  // FIRST SUBSCRIPTION CREATED
-  // -------------------------------------------------------
-
-  if (
-    eventName ===
-    'subscription.create'
-  ) {
-    const nextPaymentDate =
-      subscriptionObject?.next_payment_date ||
-      data?.next_payment_date ||
-      null
-
-    await updateVendorSubscription(
-      env,
-      subscription.id,
-      {
-        status: 'active',
-        current_period_start:
-          subscription.current_period_start ||
-          now,
-        current_period_end:
-          nextPaymentDate ||
-          subscription.current_period_end ||
-          addOneMonth(
-            new Date()
-          ),
-        grace_period_ends_at:
-          null,
-        paystack_customer_code:
-          customerCode ||
-          subscription.paystack_customer_code ||
-          null,
-        paystack_subscription_code:
-          subscriptionCode ||
-          subscription.paystack_subscription_code ||
-          null,
-      }
-    )
-
-    console.log(
-      `Vendor subscription ${subscription.id} activated by subscription.create`
-    )
-
-    return {
-      handled: true,
-      status: 'active',
-    }
-  }
-
-  // -------------------------------------------------------
-  // SUCCESSFUL PAYMENT
-  // -------------------------------------------------------
-
-  if (
-    eventName ===
-    'charge.success'
-  ) {
-    const purpose =
-      metadata?.purpose
-
-    const isVendorSubscription =
-      purpose ===
-        'vendor_subscription' ||
-      Boolean(
-        subscription
-      )
-
-    if (
-      !isVendorSubscription
-    ) {
-      return {
-        handled: false,
-        reason:
-          'Normal Paystack charge',
-      }
-    }
-
-    const nextPaymentDate =
-      subscriptionObject?.next_payment_date ||
-      data?.subscription?.next_payment_date ||
-      data?.next_payment_date ||
-      null
-
-    await updateVendorSubscription(
-      env,
-      subscription.id,
-      {
-        status: 'active',
-        current_period_start:
-          now,
-        current_period_end:
-          nextPaymentDate ||
-          addOneMonth(
-            new Date()
-          ),
-        grace_period_ends_at:
-          null,
-        paystack_customer_code:
-          customerCode ||
-          subscription.paystack_customer_code ||
-          null,
-        paystack_subscription_code:
-          subscriptionCode ||
-          subscription.paystack_subscription_code ||
-          null,
-      }
-    )
-
-    console.log(
-      `Vendor subscription ${subscription.id} marked active after successful Paystack charge.`
-    )
-
-    return {
-      handled: true,
-      status: 'active',
-    }
-  }
-
-  // -------------------------------------------------------
-  // FAILED RECURRING PAYMENT
-  // -------------------------------------------------------
-
-  if (
-    eventName ===
-    'invoice.payment_failed'
-  ) {
-    await updateVendorSubscription(
-      env,
-      subscription.id,
-      {
-        status:
-          'grace_period',
-        grace_period_ends_at:
-          addDays(
-            new Date(),
-            SUBSCRIPTION_GRACE_DAYS
-          ),
-        paystack_customer_code:
-          customerCode ||
-          subscription.paystack_customer_code ||
-          null,
-        paystack_subscription_code:
-          subscriptionCode ||
-          subscription.paystack_subscription_code ||
-          null,
-      }
-    )
-
-    console.log(
-      `Vendor subscription ${subscription.id} entered ${SUBSCRIPTION_GRACE_DAYS}-day grace period after failed payment.`
-    )
-
-    return {
-      handled: true,
-      status:
-        'grace_period',
-    }
-  }
-
-  // -------------------------------------------------------
-  // INVOICE UPDATE
-  // -------------------------------------------------------
-
-  if (
-    eventName ===
-    'invoice.update'
-  ) {
-    const invoiceStatus =
-      data?.status
-
-    const paid =
-      data?.paid === true ||
-      invoiceStatus ===
-        'success' ||
-      invoiceStatus ===
-        'paid'
-
-    if (paid) {
-      const nextPaymentDate =
-        subscriptionObject?.next_payment_date ||
-        data?.next_payment_date ||
-        null
-
-      await updateVendorSubscription(
-        env,
-        subscription.id,
-        {
-          status: 'active',
-          current_period_start:
-            now,
-          current_period_end:
-            nextPaymentDate ||
-            addOneMonth(
-              new Date()
-            ),
-          grace_period_ends_at:
-            null,
-          paystack_customer_code:
-            customerCode ||
-            subscription.paystack_customer_code ||
-            null,
-          paystack_subscription_code:
-            subscriptionCode ||
-            subscription.paystack_subscription_code ||
-            null,
-        }
-      )
-
-      return {
-        handled: true,
-        status: 'active',
-      }
-    }
-
-    return {
-      handled: true,
-      status:
-        subscription.status,
-    }
-  }
-
-  // -------------------------------------------------------
-  // SUBSCRIPTION WILL NOT RENEW
-  // -------------------------------------------------------
-
-  if (
-    eventName ===
-    'subscription.not_renew'
-  ) {
-    console.log(
-      `Vendor subscription ${subscription.id} will not renew. Current access remains until ${subscription.current_period_end || 'period end'}.`
-    )
-
-    return {
-      handled: true,
-      status:
-        subscription.status,
-    }
-  }
-
-  // -------------------------------------------------------
-  // SUBSCRIPTION DISABLED
-  // -------------------------------------------------------
-
-  if (
-    eventName ===
-    'subscription.disable'
-  ) {
-    const periodEnd =
-      subscription.current_period_end
-        ? new Date(
-            subscription.current_period_end
-          )
-        : null
-
-    const currentTime =
-      new Date()
-
-    if (
-      periodEnd &&
-      periodEnd >
-        currentTime
-    ) {
-      await updateVendorSubscription(
-        env,
-        subscription.id,
-        {
-          status:
-            'cancelled',
-          paystack_customer_code:
-            customerCode ||
-            subscription.paystack_customer_code ||
-            null,
-          paystack_subscription_code:
-            subscriptionCode ||
-            subscription.paystack_subscription_code ||
-            null,
-        }
-      )
-
-      console.log(
-        `Vendor subscription ${subscription.id} marked cancelled; current period remains valid until ${periodEnd.toISOString()}.`
-      )
-    } else {
-      await updateVendorSubscription(
-        env,
-        subscription.id,
-        {
-          status:
-            'expired',
-          grace_period_ends_at:
-            null,
-          paystack_customer_code:
-            customerCode ||
-            subscription.paystack_customer_code ||
-            null,
-          paystack_subscription_code:
-            subscriptionCode ||
-            subscription.paystack_subscription_code ||
-            null,
-        }
-      )
-
-      console.log(
-        `Vendor subscription ${subscription.id} marked expired after Paystack disable.`
-      )
-    }
-
-    return {
-      handled: true,
-      status:
-        periodEnd &&
-        periodEnd >
-          currentTime
-          ? 'cancelled'
-          : 'expired',
-    }
-  }
-
-  return {
-    handled: false,
-    reason:
-      'Unhandled subscription event',
-  }
-}
-
-// ---------------------------------------------------------
-// VENDOR SUBSCRIPTION CRON LIFECYCLE
-// ---------------------------------------------------------
-
-async function processVendorSubscriptionLifecycle(
-  env
-) {
-  const now =
-    new Date()
-
-  // -------------------------------------------------------
-  // TRIAL ENDED
-  // -------------------------------------------------------
-
-  const trialResponse =
-    await supabaseRequest(
-      env,
-      `/rest/v1/vendor_subscriptions?status=eq.trialing&trial_ends_at=lte.${encodeURIComponent(
-        now.toISOString()
-      )}&select=id,vendor_id,status,trial_ends_at,current_period_end`,
-      {
-        method: 'GET',
-      }
-    )
-
-  let trialSubscriptions = null
-
-  try {
-    trialSubscriptions =
-      await trialResponse.json()
-  } catch {
-    trialSubscriptions = null
-  }
-
-  if (
-    trialResponse.ok &&
-    Array.isArray(
-      trialSubscriptions
-    )
-  ) {
-    for (
-      const subscription of
-        trialSubscriptions
-    ) {
-      try {
-        await updateVendorSubscription(
-          env,
-          subscription.id,
-          {
-            status:
-              'grace_period',
-            grace_period_ends_at:
-              addDays(
-                now,
-                SUBSCRIPTION_GRACE_DAYS
-              ),
-          }
-        )
-
-        console.log(
-          `Vendor subscription ${subscription.id} trial ended. ${SUBSCRIPTION_GRACE_DAYS}-day grace period started.`
-        )
-      } catch (error) {
-        console.error(
-          `Could not transition trial subscription ${subscription.id}:`,
-          error
-        )
-      }
-    }
-  } else if (
-    !trialResponse.ok
-  ) {
-    console.error(
-      'Could not load expired vendor trials:',
-      trialSubscriptions
-    )
-  }
-
-  // -------------------------------------------------------
-  // ACTIVE PERIOD ENDED
-  // -------------------------------------------------------
-
-  const activeResponse =
-    await supabaseRequest(
-      env,
-      `/rest/v1/vendor_subscriptions?status=eq.active&current_period_end=lte.${encodeURIComponent(
-        now.toISOString()
-      )}&select=id,vendor_id,status,current_period_end`,
-      {
-        method: 'GET',
-      }
-    )
-
-  let activeSubscriptions = null
-
-  try {
-    activeSubscriptions =
-      await activeResponse.json()
-  } catch {
-    activeSubscriptions = null
-  }
-
-  if (
-    activeResponse.ok &&
-    Array.isArray(
-      activeSubscriptions
-    )
-  ) {
-    for (
-      const subscription of
-        activeSubscriptions
-    ) {
-      try {
-        await updateVendorSubscription(
-          env,
-          subscription.id,
-          {
-            status:
-              'grace_period',
-            grace_period_ends_at:
-              addDays(
-                now,
-                SUBSCRIPTION_GRACE_DAYS
-              ),
-          }
-        )
-
-        console.log(
-          `Vendor subscription ${subscription.id} paid period ended. Grace period started.`
-        )
-      } catch (error) {
-        console.error(
-          `Could not transition expired active subscription ${subscription.id}:`,
-          error
-        )
-      }
-    }
-  } else if (
-    !activeResponse.ok
-  ) {
-    console.error(
-      'Could not load expired active subscriptions:',
-      activeSubscriptions
-    )
-  }
-
-  // -------------------------------------------------------
-  // PAST DUE -> GRACE PERIOD
-  // -------------------------------------------------------
-
-  const pastDueResponse =
-    await supabaseRequest(
-      env,
-      `/rest/v1/vendor_subscriptions?status=eq.past_due&select=id,vendor_id,status,current_period_end,grace_period_ends_at`,
-      {
-        method: 'GET',
-      }
-    )
-
-  let pastDueSubscriptions = null
-
-  try {
-    pastDueSubscriptions =
-      await pastDueResponse.json()
-  } catch {
-    pastDueSubscriptions = null
-  }
-
-  if (
-    pastDueResponse.ok &&
-    Array.isArray(
-      pastDueSubscriptions
-    )
-  ) {
-    for (
-      const subscription of
-        pastDueSubscriptions
-    ) {
-      try {
-        await updateVendorSubscription(
-          env,
-          subscription.id,
-          {
-            status:
-              'grace_period',
-            grace_period_ends_at:
-              subscription.grace_period_ends_at ||
-              addDays(
-                now,
-                SUBSCRIPTION_GRACE_DAYS
-              ),
-          }
-        )
-      } catch (error) {
-        console.error(
-          `Could not transition past-due subscription ${subscription.id}:`,
-          error
-        )
-      }
-    }
-  }
-
-  // -------------------------------------------------------
-  // GRACE PERIOD ENDED
-  // -------------------------------------------------------
-
-  const graceResponse =
-    await supabaseRequest(
-      env,
-      `/rest/v1/vendor_subscriptions?status=eq.grace_period&grace_period_ends_at=lte.${encodeURIComponent(
-        now.toISOString()
-      )}&select=id,vendor_id,status,grace_period_ends_at`,
-      {
-        method: 'GET',
-      }
-    )
-
-  let graceSubscriptions = null
-
-  try {
-    graceSubscriptions =
-      await graceResponse.json()
-  } catch {
-    graceSubscriptions = null
-  }
-
-  if (
-    graceResponse.ok &&
-    Array.isArray(
-      graceSubscriptions
-    )
-  ) {
-    for (
-      const subscription of
-        graceSubscriptions
-    ) {
-      try {
-        await updateVendorSubscription(
-          env,
-          subscription.id,
-          {
-            status:
-              'expired',
-            grace_period_ends_at:
-              null,
-          }
-        )
-
-        console.log(
-          `Vendor subscription ${subscription.id} expired after grace period.`
-        )
-      } catch (error) {
-        console.error(
-          `Could not expire subscription ${subscription.id}:`,
-          error
-        )
-      }
-    }
-  } else if (
-    !graceResponse.ok
-  ) {
-    console.error(
-      'Could not load expired grace-period subscriptions:',
-      graceSubscriptions
-    )
-  }
-
-  // -------------------------------------------------------
-  // CANCELLED PERIODS ENDED
-  // -------------------------------------------------------
-
-  const cancelledResponse =
-    await supabaseRequest(
-      env,
-      `/rest/v1/vendor_subscriptions?status=eq.cancelled&current_period_end=lte.${encodeURIComponent(
-        now.toISOString()
-      )}&select=id,vendor_id,status,current_period_end`,
-      {
-        method: 'GET',
-      }
-    )
-
-  let cancelledSubscriptions = null
-
-  try {
-    cancelledSubscriptions =
-      await cancelledResponse.json()
-  } catch {
-    cancelledSubscriptions = null
-  }
-
-  if (
-    cancelledResponse.ok &&
-    Array.isArray(
-      cancelledSubscriptions
-    )
-  ) {
-    for (
-      const subscription of
-        cancelledSubscriptions
-    ) {
-      try {
-        await updateVendorSubscription(
-          env,
-          subscription.id,
-          {
-            status:
-              'expired',
-            grace_period_ends_at:
-              null,
-          }
-        )
-
-        console.log(
-          `Cancelled vendor subscription ${subscription.id} is now expired.`
-        )
-      } catch (error) {
-        console.error(
-          `Could not expire cancelled subscription ${subscription.id}:`,
-          error
-        )
-      }
-    }
-  }
-
-  console.log(
-    'Vendor subscription lifecycle check completed.'
-  )
-}
-
-// ---------------------------------------------------------
-// WEB PUSH
-// ---------------------------------------------------------
 
 async function deletePushSubscription(
   env,
@@ -1336,40 +166,22 @@ async function deletePushSubscription(
 
   if (!response.ok) {
     console.error(
-      `Could not delete expired push subscription ${subscriptionId}:`,
+      `Could not delete push subscription ${subscriptionId}:`,
       await response.text()
     )
   }
+
+  return response
 }
+
+// ---------------------------------------------------------
+// PUSH NOTIFICATIONS
+// ---------------------------------------------------------
 
 async function sendPushNotification(
   env,
   notification
 ) {
-  if (!env.VAPID_PRIVATE_KEY) {
-    console.error(
-      'VAPID_PRIVATE_KEY is not configured.'
-    )
-
-    return {
-      sent: 0,
-      failed: 0,
-      removed: 0,
-    }
-  }
-
-  if (!notification?.user_id) {
-    console.error(
-      'Push notification is missing user_id.'
-    )
-
-    return {
-      sent: 0,
-      failed: 0,
-      removed: 0,
-    }
-  }
-
   const subscriptionsResponse =
     await supabaseRequest(
       env,
@@ -1434,6 +246,11 @@ async function sendPushNotification(
   let failed = 0
   let removed = 0
 
+  const notificationUrl =
+    notification.url ||
+    notification.data?.url ||
+    '/'
+
   const payload =
     JSON.stringify({
       title:
@@ -1445,7 +262,24 @@ async function sendPushNotification(
       body:
         notification.message ||
         'You have a new notification.',
-      url: '/',
+      url:
+        notificationUrl,
+      data: {
+        url:
+          notificationUrl,
+        notification_id:
+          notification.id ||
+          null,
+        type:
+          notification.type ||
+          'notification',
+        title:
+          notification.title ||
+          'UniAbuja Market',
+        body:
+          notification.message ||
+          'You have a new notification.',
+      },
     })
 
   for (
@@ -2129,7 +963,995 @@ async function processPendingVendorPayouts(
     }
   }
 }
+// ---------------------------------------------------------
+// VENDOR SUBSCRIPTION HELPERS
+// ---------------------------------------------------------
 
+function addDays(date, days) {
+  const result =
+    new Date(date)
+
+  result.setUTCDate(
+    result.getUTCDate() +
+      days
+  )
+
+  return result
+}
+
+function normalizePaystackDate(
+  value
+) {
+  if (!value) {
+    return null
+  }
+
+  const date =
+    new Date(value)
+
+  if (
+    Number.isNaN(
+      date.getTime()
+    )
+  ) {
+    return null
+  }
+
+  return date.toISOString()
+}
+
+async function findVendorSubscriptionById(
+  env,
+  subscriptionId
+) {
+  if (!subscriptionId) {
+    return null
+  }
+
+  const response =
+    await supabaseRequest(
+      env,
+      `/rest/v1/vendor_subscriptions?id=eq.${encodeURIComponent(
+        subscriptionId
+      )}&select=*&limit=1`,
+      {
+        method: 'GET',
+      }
+    )
+
+  if (!response.ok) {
+    console.error(
+      'Could not load vendor subscription by ID:',
+      await response.text()
+    )
+
+    return null
+  }
+
+  let data = null
+
+  try {
+    data =
+      await response.json()
+  } catch {
+    return null
+  }
+
+  return Array.isArray(data) &&
+    data.length
+    ? data[0]
+    : null
+}
+
+async function findVendorSubscriptionByVendorId(
+  env,
+  vendorId
+) {
+  if (!vendorId) {
+    return null
+  }
+
+  const response =
+    await supabaseRequest(
+      env,
+      `/rest/v1/vendor_subscriptions?vendor_id=eq.${encodeURIComponent(
+        vendorId
+      )}&select=*&limit=1`,
+      {
+        method: 'GET',
+      }
+    )
+
+  if (!response.ok) {
+    console.error(
+      'Could not load vendor subscription:',
+      await response.text()
+    )
+
+    return null
+  }
+
+  let data = null
+
+  try {
+    data =
+      await response.json()
+  } catch {
+    return null
+  }
+
+  return Array.isArray(data) &&
+    data.length
+    ? data[0]
+    : null
+}
+
+async function updateVendorSubscription(
+  env,
+  subscriptionId,
+  updates
+) {
+  if (!subscriptionId) {
+    return false
+  }
+
+  const response =
+    await supabaseRequest(
+      env,
+      `/rest/v1/vendor_subscriptions?id=eq.${encodeURIComponent(
+        subscriptionId
+      )}`,
+      {
+        method: 'PATCH',
+        headers: {
+          'Content-Type':
+            'application/json',
+          Prefer:
+            'return=minimal',
+        },
+        body: JSON.stringify({
+          ...updates,
+          updated_at:
+            new Date().toISOString(),
+        }),
+      }
+    )
+
+  if (!response.ok) {
+    console.error(
+      `Could not update vendor subscription ${subscriptionId}:`,
+      await response.text()
+    )
+
+    return false
+  }
+
+  return true
+}
+
+async function findSubscriptionByPaystackCode(
+  env,
+  subscriptionCode
+) {
+  if (!subscriptionCode) {
+    return null
+  }
+
+  const response =
+    await supabaseRequest(
+      env,
+      `/rest/v1/vendor_subscriptions?paystack_subscription_code=eq.${encodeURIComponent(
+        subscriptionCode
+      )}&select=*&limit=1`,
+      {
+        method: 'GET',
+      }
+    )
+
+  if (!response.ok) {
+    console.error(
+      'Could not find vendor subscription by Paystack subscription code:',
+      await response.text()
+    )
+
+    return null
+  }
+
+  let data = null
+
+  try {
+    data =
+      await response.json()
+  } catch {
+    return null
+  }
+
+  return Array.isArray(data) &&
+    data.length
+    ? data[0]
+    : null
+}
+
+async function findSubscriptionByPaystackCustomerCode(
+  env,
+  customerCode
+) {
+  if (!customerCode) {
+    return null
+  }
+
+  const response =
+    await supabaseRequest(
+      env,
+      `/rest/v1/vendor_subscriptions?paystack_customer_code=eq.${encodeURIComponent(
+        customerCode
+      )}&select=*&limit=1`,
+      {
+        method: 'GET',
+      }
+    )
+
+  if (!response.ok) {
+    console.error(
+      'Could not find vendor subscription by Paystack customer code:',
+      await response.text()
+    )
+
+    return null
+  }
+
+  let data = null
+
+  try {
+    data =
+      await response.json()
+  } catch {
+    return null
+  }
+
+  return Array.isArray(data) &&
+    data.length
+    ? data[0]
+    : null
+}
+
+function getPaystackSubscriptionData(
+  event
+) {
+  const data =
+    event?.data || {}
+
+  const subscriptionCode =
+    data.subscription_code ||
+    data.subscription?.subscription_code ||
+    data.subscription?.code ||
+    null
+
+  const customerCode =
+    data.customer?.customer_code ||
+    data.customer_code ||
+    data.customer?.code ||
+    null
+
+  return {
+    subscriptionCode,
+    customerCode,
+  }
+}
+
+async function resolveVendorSubscriptionForEvent(
+  env,
+  event
+) {
+  const data =
+    event?.data || {}
+
+  const metadata =
+    data.metadata ||
+    data.transaction_metadata ||
+    {}
+
+  let parsedMetadata =
+    metadata
+
+  if (
+    typeof metadata ===
+    'string'
+  ) {
+    try {
+      parsedMetadata =
+        JSON.parse(metadata)
+    } catch {
+      parsedMetadata = {}
+    }
+  }
+
+  const subscriptionId =
+    parsedMetadata?.subscription_id ||
+    data.metadata?.subscription_id ||
+    null
+
+  const vendorId =
+    parsedMetadata?.vendor_id ||
+    data.metadata?.vendor_id ||
+    null
+
+  if (subscriptionId) {
+    const subscription =
+      await findVendorSubscriptionById(
+        env,
+        subscriptionId
+      )
+
+    if (subscription) {
+      return subscription
+    }
+  }
+
+  if (vendorId) {
+    const subscription =
+      await findVendorSubscriptionByVendorId(
+        env,
+        vendorId
+      )
+
+    if (subscription) {
+      return subscription
+    }
+  }
+
+  const {
+    subscriptionCode,
+    customerCode,
+  } =
+    getPaystackSubscriptionData(
+      event
+    )
+
+  if (subscriptionCode) {
+    const subscription =
+      await findSubscriptionByPaystackCode(
+        env,
+        subscriptionCode
+      )
+
+    if (subscription) {
+      return subscription
+    }
+  }
+
+  if (customerCode) {
+    const subscription =
+      await findSubscriptionByPaystackCustomerCode(
+        env,
+        customerCode
+      )
+
+    if (subscription) {
+      return subscription
+    }
+  }
+
+  return null
+}
+
+async function handleVendorSubscriptionWebhook(
+  env,
+  event
+) {
+  const eventName =
+    event?.event
+
+  if (
+    ![
+      'subscription.create',
+      'subscription.disable',
+      'subscription.not_renew',
+      'invoice.create',
+      'invoice.update',
+      'invoice.payment_failed',
+      'charge.success',
+    ].includes(
+      eventName
+    )
+  ) {
+    return {
+      handled: false,
+      reason:
+        'Unhandled subscription event',
+    }
+  }
+
+  /*
+   * IMPORTANT:
+   *
+   * A generic Paystack charge.success event is NOT automatically
+   * treated as a vendor subscription payment.
+   *
+   * We only process charge.success here when the transaction
+   * contains explicit vendor-subscription metadata or when the
+   * transaction can be safely matched to an existing Paystack
+   * subscription/customer code.
+   */
+  const subscription =
+    await resolveVendorSubscriptionForEvent(
+      env,
+      event
+    )
+
+  if (!subscription) {
+    return {
+      handled: false,
+      reason:
+        'No matching vendor subscription',
+    }
+  }
+
+  const data =
+    event?.data || {}
+
+  const {
+    subscriptionCode,
+    customerCode,
+  } =
+    getPaystackSubscriptionData(
+      event
+    )
+
+  const metadata =
+    data.metadata ||
+    {}
+
+  let parsedMetadata =
+    metadata
+
+  if (
+    typeof metadata ===
+    'string'
+  ) {
+    try {
+      parsedMetadata =
+        JSON.parse(metadata)
+    } catch {
+      parsedMetadata = {}
+    }
+  }
+
+  const currentTime =
+    new Date()
+
+  const currentTimeIso =
+    currentTime.toISOString()
+
+  const periodStart =
+    normalizePaystackDate(
+      data.period_start ||
+      data.subscription?.period_start
+    )
+
+  const periodEnd =
+    normalizePaystackDate(
+      data.period_end ||
+      data.subscription?.period_end
+    )
+
+  if (
+    eventName ===
+    'subscription.create'
+  ) {
+    await updateVendorSubscription(
+      env,
+      subscription.id,
+      {
+        status:
+          periodEnd &&
+          new Date(periodEnd) >
+            currentTime
+            ? 'active'
+            : 'trialing',
+        current_period_start:
+          periodStart ||
+          subscription.current_period_start ||
+          currentTimeIso,
+        current_period_end:
+          periodEnd ||
+          subscription.current_period_end ||
+          null,
+        grace_period_ends_at:
+          null,
+        paystack_customer_code:
+          customerCode ||
+          subscription.paystack_customer_code ||
+          null,
+        paystack_subscription_code:
+          subscriptionCode ||
+          subscription.paystack_subscription_code ||
+          null,
+      }
+    )
+
+    console.log(
+      `Vendor subscription ${subscription.id} activated from Paystack subscription.create.`
+    )
+
+    return {
+      handled: true,
+      status: 'active',
+    }
+  }
+
+  if (
+    eventName ===
+    'charge.success'
+  ) {
+    /*
+     * Only a successful transaction with subscription metadata
+     * or an already-known Paystack subscription/customer relationship
+     * reaches this point.
+     *
+     * This prevents ordinary marketplace order payments from
+     * changing vendor subscription state.
+     */
+
+    const explicitVendorSubscription =
+      parsedMetadata?.purpose ===
+        'vendor_subscription' ||
+      parsedMetadata?.subscription_id ||
+      parsedMetadata?.vendor_id
+
+    const hasKnownSubscriptionRelationship =
+      Boolean(
+        subscriptionCode ||
+        customerCode
+      )
+
+    if (
+      !explicitVendorSubscription &&
+      !hasKnownSubscriptionRelationship
+    ) {
+      return {
+        handled: false,
+        reason:
+          'Charge was not explicitly identified as vendor subscription payment',
+      }
+    }
+
+    const transactionStatus =
+      data.status
+
+    if (
+      transactionStatus &&
+      transactionStatus !==
+        'success'
+    ) {
+      return {
+        handled: true,
+        status:
+          subscription.status,
+      }
+    }
+
+    const transactionAmount =
+      Number(
+        data.amount
+      )
+
+    const monthlyPriceKobo =
+      Math.round(
+        Number(
+          subscription.monthly_price
+        ) * 100
+      )
+
+    if (
+      Number.isFinite(
+        transactionAmount
+      ) &&
+      Number.isFinite(
+        monthlyPriceKobo
+      ) &&
+      transactionAmount !==
+        monthlyPriceKobo
+    ) {
+      console.error(
+        `Vendor subscription ${subscription.id}: Paystack charge amount does not match monthly subscription price.`
+      )
+
+      return {
+        handled: true,
+        status:
+          subscription.status,
+      }
+    }
+
+    const newPeriodStart =
+      periodStart ||
+      currentTimeIso
+
+    const newPeriodEnd =
+      periodEnd ||
+      addDays(
+        currentTime,
+        30
+      ).toISOString()
+
+    await updateVendorSubscription(
+      env,
+      subscription.id,
+      {
+        status: 'active',
+        current_period_start:
+          newPeriodStart,
+        current_period_end:
+          newPeriodEnd,
+        grace_period_ends_at:
+          null,
+        paystack_customer_code:
+          customerCode ||
+          subscription.paystack_customer_code ||
+          null,
+        paystack_subscription_code:
+          subscriptionCode ||
+          subscription.paystack_subscription_code ||
+          null,
+      }
+    )
+
+    console.log(
+      `Vendor subscription ${subscription.id} renewed successfully from Paystack charge.success.`
+    )
+
+    return {
+      handled: true,
+      status: 'active',
+    }
+  }
+
+  if (
+    eventName ===
+    'invoice.create' ||
+    eventName ===
+    'invoice.update'
+  ) {
+    if (
+      periodStart ||
+      periodEnd
+    ) {
+      await updateVendorSubscription(
+        env,
+        subscription.id,
+        {
+          current_period_start:
+            periodStart ||
+            subscription.current_period_start ||
+            null,
+          current_period_end:
+            periodEnd ||
+            subscription.current_period_end ||
+            null,
+          paystack_customer_code:
+            customerCode ||
+            subscription.paystack_customer_code ||
+            null,
+          paystack_subscription_code:
+            subscriptionCode ||
+            subscription.paystack_subscription_code ||
+            null,
+        }
+      )
+    }
+
+    return {
+      handled: true,
+      status:
+        subscription.status,
+    }
+  }
+
+  if (
+    eventName ===
+    'invoice.payment_failed'
+  ) {
+    const graceEnd =
+      addDays(
+        currentTime,
+        SUBSCRIPTION_GRACE_DAYS
+      ).toISOString()
+
+    await updateVendorSubscription(
+      env,
+      subscription.id,
+      {
+        status: 'past_due',
+        grace_period_ends_at:
+          graceEnd,
+        paystack_customer_code:
+          customerCode ||
+          subscription.paystack_customer_code ||
+          null,
+        paystack_subscription_code:
+          subscriptionCode ||
+          subscription.paystack_subscription_code ||
+          null,
+      }
+    )
+
+    console.log(
+      `Vendor subscription ${subscription.id} marked past_due after failed invoice payment.`
+    )
+
+    return {
+      handled: true,
+      status: 'past_due',
+    }
+  }
+
+  if (
+    eventName ===
+    'subscription.not_renew'
+  ) {
+    await updateVendorSubscription(
+      env,
+      subscription.id,
+      {
+        status:
+          periodEnd &&
+          new Date(periodEnd) >
+            currentTime
+            ? 'cancelled'
+            : 'expired',
+        current_period_end:
+          periodEnd ||
+          subscription.current_period_end ||
+          null,
+        grace_period_ends_at:
+          null,
+        paystack_customer_code:
+          customerCode ||
+          subscription.paystack_customer_code ||
+          null,
+        paystack_subscription_code:
+          subscriptionCode ||
+          subscription.paystack_subscription_code ||
+          null,
+      }
+    )
+
+    console.log(
+      `Vendor subscription ${subscription.id} marked not renewing.`
+    )
+
+    return {
+      handled: true,
+      status:
+        periodEnd &&
+        new Date(periodEnd) >
+          currentTime
+          ? 'cancelled'
+          : 'expired',
+    }
+  }
+
+  if (
+    eventName ===
+    'subscription.disable'
+  ) {
+    await updateVendorSubscription(
+      env,
+      subscription.id,
+      {
+        status:
+          periodEnd &&
+          new Date(periodEnd) >
+            currentTime
+            ? 'cancelled'
+            : 'expired',
+        grace_period_ends_at:
+          null,
+        paystack_customer_code:
+          customerCode ||
+          subscription.paystack_customer_code ||
+          null,
+        paystack_subscription_code:
+          subscriptionCode ||
+          subscription.paystack_subscription_code ||
+          null,
+      }
+    )
+
+    console.log(
+      `Vendor subscription ${subscription.id} marked expired after Paystack disable.`
+    )
+
+    return {
+      handled: true,
+      status:
+        periodEnd &&
+        new Date(periodEnd) >
+          currentTime
+          ? 'cancelled'
+          : 'expired',
+    }
+  }
+
+  return {
+    handled: false,
+    reason:
+      'Unhandled subscription event',
+  }
+}
+
+// ---------------------------------------------------------
+// VENDOR SUBSCRIPTION CRON LIFECYCLE
+// ---------------------------------------------------------
+
+async function processVendorSubscriptionLifecycle(
+  env
+) {
+  const response =
+    await supabaseRequest(
+      env,
+      '/rest/v1/vendor_subscriptions?select=id,status,trial_ends_at,current_period_end,grace_period_ends_at&limit=200',
+      {
+        method: 'GET',
+      }
+    )
+
+  let subscriptions = null
+
+  try {
+    subscriptions =
+      await response.json()
+  } catch {
+    subscriptions = null
+  }
+
+  if (
+    !response.ok ||
+    !Array.isArray(
+      subscriptions
+    )
+  ) {
+    console.error(
+      'Could not load vendor subscriptions for lifecycle processing:',
+      subscriptions
+    )
+
+    return
+  }
+
+  const now =
+    new Date()
+
+  for (
+    const subscription of
+      subscriptions
+  ) {
+    try {
+      if (
+        subscription.status ===
+        'trialing'
+      ) {
+        if (
+          subscription.trial_ends_at &&
+          new Date(
+            subscription.trial_ends_at
+          ) <= now
+        ) {
+          await updateVendorSubscription(
+            env,
+            subscription.id,
+            {
+              status:
+                'expired',
+              grace_period_ends_at:
+                null,
+            }
+          )
+
+          console.log(
+            `Vendor subscription ${subscription.id} trial expired.`
+          )
+        }
+
+        continue
+      }
+
+      if (
+        subscription.status ===
+        'active'
+      ) {
+        if (
+          subscription.current_period_end &&
+          new Date(
+            subscription.current_period_end
+          ) <= now
+        ) {
+          await updateVendorSubscription(
+            env,
+            subscription.id,
+            {
+              status:
+                'past_due',
+              grace_period_ends_at:
+                addDays(
+                  now,
+                  SUBSCRIPTION_GRACE_DAYS
+                ).toISOString(),
+            }
+          )
+
+          console.log(
+            `Vendor subscription ${subscription.id} period ended. Grace period started.`
+          )
+        }
+
+        continue
+      }
+
+      if (
+        subscription.status ===
+        'past_due'
+      ) {
+        if (
+          subscription.grace_period_ends_at &&
+          new Date(
+            subscription.grace_period_ends_at
+          ) <= now
+        ) {
+          await updateVendorSubscription(
+            env,
+            subscription.id,
+            {
+              status:
+                'expired',
+              grace_period_ends_at:
+                null,
+            }
+          )
+
+          console.log(
+            `Vendor subscription ${subscription.id} grace period expired.`
+          )
+        }
+
+        continue
+      }
+
+      if (
+        subscription.status ===
+        'cancelled'
+      ) {
+        if (
+          subscription.current_period_end &&
+          new Date(
+            subscription.current_period_end
+          ) <= now
+        ) {
+          await updateVendorSubscription(
+            env,
+            subscription.id,
+            {
+              status:
+                'expired',
+              grace_period_ends_at:
+                null,
+            }
+          )
+
+          console.log(
+            `Vendor subscription ${subscription.id} cancelled period expired.`
+          )
+        }
+      }
+    } catch (error) {
+      console.error(
+        `Error processing vendor subscription lifecycle for ${subscription.id}:`,
+        error
+      )
+    }
+  }
+}
 // ---------------------------------------------------------
 // WORKER
 // ---------------------------------------------------------
@@ -2255,6 +2077,10 @@ export default {
               payload.title,
             message:
               payload.message,
+            type:
+              payload.type,
+            url:
+              payload.url,
           }
         }
 
@@ -2495,6 +2321,226 @@ export default {
               500
             )
           }
+        }
+
+        // -----------------------------------------------------
+        // CUSTOMER ORDER CHARGE.SUCCESS BACKUP
+        // -----------------------------------------------------
+
+        if (
+          eventName ===
+          'charge.success'
+        ) {
+          const transaction =
+            event?.data
+
+          const reference =
+            transaction?.reference
+
+          if (!reference) {
+            return jsonResponse({
+              success: true,
+              ignored: true,
+            })
+          }
+
+          const orderResponse =
+            await supabaseRequest(
+              env,
+              `/rest/v1/orders?payment_reference=eq.${encodeURIComponent(
+                reference
+              )}&select=id,total_amount,payment_reference,payment_status,customer_id&limit=1`,
+              {
+                method: 'GET',
+              }
+            )
+
+          let orders = null
+
+          try {
+            orders =
+              await orderResponse.json()
+          } catch {
+            orders = null
+          }
+
+          if (
+            !orderResponse.ok ||
+            !Array.isArray(
+              orders
+            ) ||
+            !orders.length
+          ) {
+            return jsonResponse({
+              success: true,
+              ignored: true,
+            })
+          }
+
+          const order =
+            orders[0]
+
+          const paidAmount =
+            Number(
+              transaction.amount
+            )
+
+          const expectedAmount =
+            Math.round(
+              Number(
+                order.total_amount
+              ) * 100
+            )
+
+          if (
+            !Number.isFinite(
+              paidAmount
+            ) ||
+            paidAmount !==
+              expectedAmount
+          ) {
+            console.error(
+              `Customer order ${order.id}: charge.success amount does not match expected amount.`
+            )
+
+            return jsonResponse(
+              {
+                success: false,
+                message:
+                  'Payment amount mismatch',
+              },
+              400
+            )
+          }
+
+          if (
+            order.payment_status !==
+            'paid'
+          ) {
+            const paidAt =
+              new Date().toISOString()
+
+            const updateOrderResponse =
+              await supabaseRequest(
+                env,
+                `/rest/v1/orders?id=eq.${encodeURIComponent(
+                  order.id
+                )}&payment_reference=eq.${encodeURIComponent(
+                  reference
+                )}`,
+                {
+                  method: 'PATCH',
+                  headers: {
+                    'Content-Type':
+                      'application/json',
+                    Prefer:
+                      'return=minimal',
+                  },
+                  body: JSON.stringify({
+                    payment_status:
+                      'paid',
+                    paid_at:
+                      paidAt,
+                    updated_at:
+                      paidAt,
+                  }),
+                }
+              )
+
+            if (
+              !updateOrderResponse.ok
+            ) {
+              console.error(
+                `Could not mark customer order ${order.id} as paid from charge.success:`,
+                await updateOrderResponse.text()
+              )
+
+              return jsonResponse(
+                {
+                  success: false,
+                  message:
+                    'Could not mark order as paid',
+                },
+                500
+              )
+            }
+
+            const orderItemsResponse =
+              await supabaseRequest(
+                env,
+                `/rest/v1/order_items?order_id=eq.${encodeURIComponent(
+                  order.id
+                )}&select=product_id`,
+                {
+                  method: 'GET',
+                }
+              )
+
+            let orderItems = null
+
+            try {
+              orderItems =
+                await orderItemsResponse.json()
+            } catch {
+              orderItems = null
+            }
+
+            if (
+              orderItemsResponse.ok &&
+              Array.isArray(
+                orderItems
+              )
+            ) {
+              for (
+                const item of
+                  orderItems
+              ) {
+                if (
+                  !item?.product_id
+                ) {
+                  continue
+                }
+
+                const deleteCartResponse =
+                  await supabaseRequest(
+                    env,
+                    `/rest/v1/cart_items?customer_id=eq.${encodeURIComponent(
+                      order.customer_id
+                    )}&product_id=eq.${encodeURIComponent(
+                      item.product_id
+                    )}`,
+                    {
+                      method: 'DELETE',
+                      headers: {
+                        Prefer:
+                          'return=minimal',
+                      },
+                    }
+                  )
+
+                if (
+                  !deleteCartResponse.ok
+                ) {
+                  console.error(
+                    `Could not remove product ${item.product_id} from customer cart after charge.success payment:`,
+                    await deleteCartResponse.text()
+                  )
+                }
+              }
+            }
+
+            console.log(
+              `Customer order ${order.id} marked paid from verified Paystack charge.success.`
+            )
+          }
+
+          return jsonResponse({
+            success: true,
+            order:
+              true,
+            status:
+              'paid',
+          })
         }
 
         // -----------------------------------------------------
@@ -3374,7 +3420,6 @@ export default {
         )
       }
     }
-
     // ---------------------------------------------------------
     // PAYMENTS: INITIALIZE PAYSTACK PAYMENT
     // ---------------------------------------------------------
@@ -3536,7 +3581,10 @@ export default {
                   internalReference,
                 currency: 'NGN',
                 callback_url:
-                  `${url.origin}/payment/callback`,
+                  `${getAppUrl(
+                    env,
+                    request
+                  )}/payment/callback`,
               }),
             }
           )
@@ -3873,16 +3921,19 @@ export default {
                 plan:
                   env.PAYSTACK_VENDOR_PLAN_CODE,
                 callback_url:
-                  `${url.origin}/vendor-subscription/callback`,
+                  `${getAppUrl(
+                    env,
+                    request
+                  )}/vendor-subscription/callback`,
                 metadata:
-                  JSON.stringify({
+                  {
                     vendor_id:
                       user.id,
                     subscription_id:
                       subscription.id,
                     purpose:
                       'vendor_subscription',
-                  }),
+                  },
               }),
             }
           )
@@ -3955,6 +4006,232 @@ export default {
     }
 
     // ---------------------------------------------------------
+    // VENDOR SUBSCRIPTION CALLBACK
+    // ---------------------------------------------------------
+
+    if (
+      url.pathname ===
+        '/vendor-subscription/callback' &&
+      request.method === 'GET'
+    ) {
+      try {
+        const reference =
+          url.searchParams.get(
+            'reference'
+          )
+
+        if (!reference) {
+          return Response.redirect(
+            `${getAppUrl(
+              env,
+              request
+            )}/?subscription=error`,
+            303
+          )
+        }
+
+        const verifyResponse =
+          await fetch(
+            `https://api.paystack.co/transaction/verify/${encodeURIComponent(
+              reference
+            )}`,
+            {
+              method: 'GET',
+              headers: {
+                Authorization:
+                  `Bearer ${env.PAYSTACK_SECRET_KEY}`,
+              },
+            }
+          )
+
+        let verifyData = null
+
+        try {
+          verifyData =
+            await verifyResponse.json()
+        } catch {
+          verifyData = null
+        }
+
+        if (
+          !verifyResponse.ok ||
+          !verifyData?.status ||
+          verifyData.data
+            ?.status !==
+            'success'
+        ) {
+          return Response.redirect(
+            `${getAppUrl(
+              env,
+              request
+            )}/?subscription=failed&reference=${encodeURIComponent(
+              reference
+            )}`,
+            303
+          )
+        }
+
+        const transaction =
+          verifyData.data
+
+        const metadata =
+          transaction.metadata ||
+          {}
+
+        let parsedMetadata =
+          metadata
+
+        if (
+          typeof metadata ===
+          'string'
+        ) {
+          try {
+            parsedMetadata =
+              JSON.parse(metadata)
+          } catch {
+            parsedMetadata = {}
+          }
+        }
+
+        const subscriptionId =
+          parsedMetadata
+            ?.subscription_id
+
+        const vendorId =
+          parsedMetadata
+            ?.vendor_id
+
+        if (
+          parsedMetadata?.purpose !==
+            'vendor_subscription' ||
+          !subscriptionId ||
+          !vendorId
+        ) {
+          return Response.redirect(
+            `${getAppUrl(
+              env,
+              request
+            )}/?subscription=error`,
+            303
+          )
+        }
+
+        const subscription =
+          await findVendorSubscriptionById(
+            env,
+            subscriptionId
+          )
+
+        if (
+          !subscription ||
+          subscription.vendor_id !==
+            vendorId
+        ) {
+          return Response.redirect(
+            `${getAppUrl(
+              env,
+              request
+            )}/?subscription=error`,
+            303
+          )
+        }
+
+        const expectedAmount =
+          Math.round(
+            Number(
+              subscription.monthly_price
+            ) * 100
+          )
+
+        const paidAmount =
+          Number(
+            transaction.amount
+          )
+
+        if (
+          !Number.isFinite(
+            expectedAmount
+          ) ||
+          !Number.isFinite(
+            paidAmount
+          ) ||
+          paidAmount !==
+            expectedAmount
+        ) {
+          console.error(
+            `Vendor subscription ${subscription.id}: callback payment amount mismatch.`
+          )
+
+          return Response.redirect(
+            `${getAppUrl(
+              env,
+              request
+            )}/?subscription=error`,
+            303
+          )
+        }
+
+        const periodStart =
+          normalizePaystackDate(
+            transaction.paid_at
+          ) ||
+          new Date().toISOString()
+
+        const periodEnd =
+          addDays(
+            new Date(
+              periodStart
+            ),
+            30
+          ).toISOString()
+
+        await updateVendorSubscription(
+          env,
+          subscription.id,
+          {
+            status: 'active',
+            current_period_start:
+              periodStart,
+            current_period_end:
+              periodEnd,
+            grace_period_ends_at:
+              null,
+            paystack_customer_code:
+              transaction.customer
+                ?.customer_code ||
+              subscription.paystack_customer_code ||
+              null,
+          }
+        )
+
+        console.log(
+          `Vendor subscription ${subscription.id} activated from verified payment callback.`
+        )
+
+        return Response.redirect(
+          `${getAppUrl(
+            env,
+            request
+          )}/?subscription=success`,
+          303
+        )
+      } catch (error) {
+        console.error(
+          'Vendor subscription callback error:',
+          error
+        )
+
+        return Response.redirect(
+          `${getAppUrl(
+            env,
+            request
+          )}/?subscription=error`,
+          303
+        )
+      }
+    }
+
+    // ---------------------------------------------------------
     // PAYMENT CALLBACK
     // ---------------------------------------------------------
 
@@ -3971,7 +4248,10 @@ export default {
 
         if (!reference) {
           return Response.redirect(
-            'https://uniabuja-market.mammanabideen.workers.dev/?payment=error',
+            `${getAppUrl(
+              env,
+              request
+            )}/?payment=error`,
             303
           )
         }
@@ -4001,7 +4281,10 @@ export default {
             'success'
         ) {
           return Response.redirect(
-            `https://uniabuja-market.mammanabideen.workers.dev/?payment=failed&reference=${encodeURIComponent(
+            `${getAppUrl(
+              env,
+              request
+            )}/?payment=failed&reference=${encodeURIComponent(
               reference
             )}`,
             303
@@ -4033,7 +4316,10 @@ export default {
           !orders.length
         ) {
           return Response.redirect(
-            `https://uniabuja-market.mammanabideen.workers.dev/?payment=error&reference=${encodeURIComponent(
+            `${getAppUrl(
+              env,
+              request
+            )}/?payment=error&reference=${encodeURIComponent(
               reference
             )}`,
             303
@@ -4060,7 +4346,10 @@ export default {
           expectedAmount
         ) {
           return Response.redirect(
-            `https://uniabuja-market.mammanabideen.workers.dev/?payment=error&order_id=${encodeURIComponent(
+            `${getAppUrl(
+              env,
+              request
+            )}/?payment=error&order_id=${encodeURIComponent(
               order.id
             )}`,
             303
@@ -4072,7 +4361,10 @@ export default {
           reference
         ) {
           return Response.redirect(
-            `https://uniabuja-market.mammanabideen.workers.dev/?payment=error&order_id=${encodeURIComponent(
+            `${getAppUrl(
+              env,
+              request
+            )}/?payment=error&order_id=${encodeURIComponent(
               order.id
             )}`,
             303
@@ -4125,7 +4417,10 @@ export default {
             )
 
             return Response.redirect(
-              `https://uniabuja-market.mammanabideen.workers.dev/?payment=processing&order_id=${encodeURIComponent(
+              `${getAppUrl(
+                env,
+                request
+              )}/?payment=processing&order_id=${encodeURIComponent(
                 order.id
               )}`,
               303
@@ -4203,7 +4498,10 @@ export default {
         }
 
         return Response.redirect(
-          `https://uniabuja-market.mammanabideen.workers.dev/?payment=success&order_id=${encodeURIComponent(
+          `${getAppUrl(
+            env,
+            request
+          )}/?payment=success&order_id=${encodeURIComponent(
             order.id
           )}`,
           303
@@ -4215,7 +4513,10 @@ export default {
         )
 
         return Response.redirect(
-          'https://uniabuja-market.mammanabideen.workers.dev/?payment=error',
+          `${getAppUrl(
+            env,
+            request
+          )}/?payment=error`,
           303
         )
       }

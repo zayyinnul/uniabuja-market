@@ -469,8 +469,8 @@ function Notifications({ user }) {
             position: 'absolute',
             right: 0,
             top: 'calc(100% + 10px)',
-            width: 'min(360px, 90vw)',
-            maxHeight: '480px',
+            width: 'min(380px, calc(100vw - 24px))',
+            maxHeight: '75vh',
             overflowY: 'auto',
             background: '#fff',
             border: '1px solid #e5e7eb',
@@ -478,30 +478,33 @@ function Notifications({ user }) {
             boxShadow:
               '0 12px 30px rgba(0,0,0,0.15)',
             zIndex: 1000,
-            padding: '12px',
+            padding: '14px',
           }}
         >
+          {/* PUSH NOTIFICATION SETTINGS */}
           <div
             style={{
-              marginBottom: '12px',
-              paddingBottom: '12px',
+              marginBottom: '14px',
+              paddingBottom: '14px',
               borderBottom: '1px solid #e5e7eb',
             }}
           >
             <strong>
-              Offline notifications
+              📱 App notifications
             </strong>
 
             {pushEnabled ? (
               <>
                 <p
                   style={{
-                    margin: '5px 0 0',
+                    margin: '6px 0 0',
                     fontSize: '13px',
                     color: '#16a34a',
+                    fontWeight: '600',
                   }}
                 >
-                  ✓ Enabled on this device
+                  ✓ Push notifications enabled on
+                  this device
                 </p>
 
                 <button
@@ -511,8 +514,17 @@ function Notifications({ user }) {
                   }
                   disabled={pushLoading}
                   style={{
-                    marginTop: '8px',
+                    marginTop: '9px',
+                    padding: '8px 12px',
+                    border:
+                      '1px solid #d1d5db',
+                    background: '#fff',
+                    borderRadius: '7px',
+                    cursor: pushLoading
+                      ? 'not-allowed'
+                      : 'pointer',
                     fontSize: '12px',
+                    fontWeight: '600',
                   }}
                 >
                   {pushLoading
@@ -521,27 +533,52 @@ function Notifications({ user }) {
                 </button>
               </>
             ) : (
-              <button
-                type="button"
-                onClick={
-                  enablePushNotifications
-                }
-                disabled={pushLoading}
-                style={{
-                  marginTop: '8px',
-                }}
-              >
-                {pushLoading
-                  ? 'Enabling...'
-                  : 'Enable notifications'}
-              </button>
+              <>
+                <p
+                  style={{
+                    margin: '6px 0 0',
+                    fontSize: '13px',
+                    color: '#6b7280',
+                  }}
+                >
+                  Receive notifications even when
+                  the app is not open.
+                </p>
+
+                <button
+                  type="button"
+                  onClick={
+                    enablePushNotifications
+                  }
+                  disabled={pushLoading}
+                  style={{
+                    marginTop: '9px',
+                    padding: '9px 14px',
+                    border: 'none',
+                    background: '#15803d',
+                    color: '#fff',
+                    borderRadius: '8px',
+                    cursor: pushLoading
+                      ? 'not-allowed'
+                      : 'pointer',
+                    fontSize: '13px',
+                    fontWeight: '700',
+                    width: '100%',
+                  }}
+                >
+                  {pushLoading
+                    ? 'Enabling...'
+                    : '🔔 Enable app notifications'}
+                </button>
+              </>
             )}
 
             {pushMessage && (
               <p
                 style={{
-                  margin: '6px 0 0',
+                  margin: '7px 0 0',
                   fontSize: '12px',
+                  color: '#374151',
                 }}
               >
                 {pushMessage}
@@ -549,16 +586,21 @@ function Notifications({ user }) {
             )}
           </div>
 
+          {/* NOTIFICATION HEADER */}
           <div
             style={{
               display: 'flex',
               justifyContent: 'space-between',
               alignItems: 'center',
               gap: '10px',
-              marginBottom: '10px',
+              marginBottom: '12px',
             }}
           >
-            <strong>
+            <strong
+              style={{
+                fontSize: '16px',
+              }}
+            >
               Notifications
             </strong>
 
@@ -567,21 +609,33 @@ function Notifications({ user }) {
                 type="button"
                 onClick={markAllAsRead}
                 style={{
-                  border: 'none',
-                  background: 'transparent',
+                  border:
+                    '1px solid #15803d',
+                  background: '#15803d',
+                  color: '#fff',
+                  borderRadius: '7px',
+                  padding: '7px 10px',
                   cursor: 'pointer',
                   fontSize: '12px',
+                  fontWeight: '700',
+                  whiteSpace: 'nowrap',
                 }}
               >
-                Mark all read
+                ✓ Mark all read
               </button>
             )}
           </div>
 
+          {/* NOTIFICATIONS */}
           {loading ? (
             <p>Loading notifications...</p>
           ) : notifications.length === 0 ? (
-            <p>
+            <p
+              style={{
+                color: '#6b7280',
+                fontSize: '14px',
+              }}
+            >
               You don't have any notifications yet.
             </p>
           ) : (
@@ -593,40 +647,88 @@ function Notifications({ user }) {
                   markAsRead(notification.id)
                 }
                 style={{
-                  padding: '12px',
-                  marginBottom: '8px',
+                  padding: '13px',
+                  marginBottom: '9px',
                   borderRadius: '10px',
-                  background: notification.is_read
-                    ? '#f9fafb'
-                    : '#eff6ff',
-                  border: '1px solid #e5e7eb',
+                  background:
+                    notification.is_read
+                      ? '#f9fafb'
+                      : '#eff6ff',
+                  border:
+                    notification.is_read
+                      ? '1px solid #e5e7eb'
+                      : '1px solid #bfdbfe',
                   cursor: notification.is_read
                     ? 'default'
                     : 'pointer',
                 }}
               >
-                <strong>
+                <strong
+                  style={{
+                    display: 'block',
+                    fontSize: '14px',
+                  }}
+                >
                   {notification.title}
                 </strong>
 
                 <p
                   style={{
-                    margin: '5px 0',
+                    margin: '6px 0',
                     fontSize: '14px',
+                    lineHeight: '1.45',
                   }}
                 >
                   {notification.message}
                 </p>
 
-                <small
+                <div
                   style={{
-                    color: '#6b7280',
+                    marginTop: '9px',
+                    display: 'flex',
+                    justifyContent:
+                      'space-between',
+                    alignItems: 'center',
+                    gap: '10px',
+                    flexWrap: 'wrap',
                   }}
                 >
-                  {formatDate(
-                    notification.created_at
+                  <small
+                    style={{
+                      color: '#6b7280',
+                    }}
+                  >
+                    {formatDate(
+                      notification.created_at
+                    )}
+                  </small>
+
+                  {!notification.is_read && (
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        markAsRead(
+                          notification.id
+                        )
+                      }}
+                      style={{
+                        border:
+                          '1px solid #15803d',
+                        background: '#fff',
+                        color: '#15803d',
+                        borderRadius: '7px',
+                        padding: '7px 10px',
+                        fontSize: '12px',
+                        fontWeight: '700',
+                        cursor: 'pointer',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      ✓ Mark as read
+                    </button>
                   )}
-                </small>
+                </div>
               </div>
             ))
           )}
