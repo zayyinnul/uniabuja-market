@@ -44,8 +44,7 @@ function Checkout({ user, onBack, onOrderCreated }) {
     Cart.jsx saves:
       uniabuja_checkout_vendor_id
 
-    This makes Checkout show only products
-    belonging to that vendor.
+    Checkout is strictly limited to that vendor.
   */
   const loadCart = async () => {
     setLoading(true)
@@ -64,6 +63,16 @@ function Checkout({ user, onBack, onOrderCreated }) {
           'Could not read selected vendor:',
           error
         )
+      }
+
+      if (!vendorId) {
+        setSelectedVendorId('')
+        setCartItems([])
+        setMessage(
+          'No store was selected. Please return to your cart and choose a store to checkout.'
+        )
+        setLoading(false)
+        return
       }
 
       setSelectedVendorId(vendorId)
@@ -98,35 +107,18 @@ function Checkout({ user, onBack, onOrderCreated }) {
         throw new Error(error.message)
       }
 
-      let items = data || []
-
       /*
         Only keep products belonging to the
-        vendor selected from the cart.
-
-        If there is no selected vendor ID,
-        fall back to the full cart so we don't
-        unnecessarily break the existing flow.
+        selected vendor.
       */
-      if (vendorId) {
-        items = items.filter(
-          (item) =>
-            item.products?.vendor_id ===
-            vendorId
-        )
-      }
+      const items = (data || []).filter(
+        (item) =>
+          item.products?.vendor_id === vendorId
+      )
 
       setCartItems(items)
 
-      /*
-        If a vendor was selected but that vendor's
-        products are no longer in the cart, clear
-        the selection and tell the user.
-      */
-      if (
-        vendorId &&
-        items.length === 0
-      ) {
+      if (items.length === 0) {
         setMessage(
           'The selected store has no items in your cart.'
         )
@@ -178,8 +170,7 @@ function Checkout({ user, onBack, onOrderCreated }) {
     is still valid.
 
     If it was cancelled, paid, or no longer exists,
-    clear the stale sessionStorage value so Checkout
-    becomes usable again.
+    clear the stale sessionStorage value.
   */
   useEffect(() => {
     const checkPendingOrder = async () => {
@@ -253,6 +244,9 @@ function Checkout({ user, onBack, onOrderCreated }) {
     }
   }, [])
 
+  /*
+    Load delivery quote only for the selected vendor.
+  */
   useEffect(() => {
     if (
       cartItems.length > 0 &&
@@ -290,7 +284,10 @@ function Checkout({ user, onBack, onOrderCreated }) {
     method,
     zoneId
   ) => {
-    if (!zoneId || !selectedVendorId) {
+    if (
+      !zoneId ||
+      !selectedVendorId
+    ) {
       setDeliveryFee(0)
       setCheckoutTotal(0)
       return
@@ -306,9 +303,14 @@ function Checkout({ user, onBack, onOrderCreated }) {
       } = await supabase.rpc(
         'get_checkout_delivery_quote',
         {
-          p_delivery_method: 'vendor',
-          p_zone_id: zoneId,
-          p_vendor_id: selectedVendorId,
+          p_delivery_method:
+            'vendor',
+
+          p_zone_id:
+            zoneId,
+
+          p_vendor_id:
+            selectedVendorId,
         }
       )
 
@@ -618,6 +620,11 @@ function Checkout({ user, onBack, onOrderCreated }) {
     setMessage('Creating your order...')
 
     try {
+      /*
+        IMPORTANT:
+        This now calls the NEW 5-parameter RPC and
+        explicitly sends the selected vendor.
+      */
       const {
         data: orderId,
         error: orderError,
@@ -635,6 +642,9 @@ function Checkout({ user, onBack, onOrderCreated }) {
 
           p_zone_id:
             selectedZoneId,
+
+          p_vendor_id:
+            selectedVendorId,
         }
       )
 
@@ -654,6 +664,17 @@ function Checkout({ user, onBack, onOrderCreated }) {
         'Order created:',
         orderId
       )
+
+      if (onOrderCreated) {
+        try {
+          onOrderCreated(orderId)
+        } catch (callbackError) {
+          console.error(
+            'Order created callback error:',
+            callbackError
+          )
+        }
+      }
 
       await initializePayment(
         orderId
