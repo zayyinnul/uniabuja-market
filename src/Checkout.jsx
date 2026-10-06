@@ -256,7 +256,8 @@ function Checkout({ user, onBack, onOrderCreated }) {
   useEffect(() => {
     if (
       cartItems.length > 0 &&
-      selectedZoneId
+      selectedZoneId &&
+      selectedVendorId
     ) {
       loadDeliveryQuote(
         'vendor',
@@ -266,6 +267,7 @@ function Checkout({ user, onBack, onOrderCreated }) {
   }, [
     cartItems,
     selectedZoneId,
+    selectedVendorId,
   ])
 
   const getProductTotal = () => {
@@ -288,7 +290,7 @@ function Checkout({ user, onBack, onOrderCreated }) {
     method,
     zoneId
   ) => {
-    if (!zoneId) {
+    if (!zoneId || !selectedVendorId) {
       setDeliveryFee(0)
       setCheckoutTotal(0)
       return
@@ -306,6 +308,7 @@ function Checkout({ user, onBack, onOrderCreated }) {
         {
           p_delivery_method: 'vendor',
           p_zone_id: zoneId,
+          p_vendor_id: selectedVendorId,
         }
       )
 
@@ -578,6 +581,13 @@ function Checkout({ user, onBack, onOrderCreated }) {
     if (!selectedZoneId) {
       setMessage(
         'Please select your delivery area.'
+      )
+      return
+    }
+
+    if (!selectedVendorId) {
+      setMessage(
+        'Could not identify the selected store. Please return to your cart and try again.'
       )
       return
     }
