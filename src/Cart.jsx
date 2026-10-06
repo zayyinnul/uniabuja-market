@@ -3,6 +3,7 @@ import { supabase } from './lib/supabase'
 
 function Cart({ user, onBack, onCheckout }) {
   const [cartItems, setCartItems] = useState([])
+  const [stores, setStores] = useState({})
   const [loading, setLoading] = useState(true)
   const [updating, setUpdating] = useState(null)
   const [message, setMessage] = useState('')
@@ -29,7 +30,8 @@ function Cart({ user, onBack, onCheckout }) {
           category,
           image_url,
           stock,
-          status
+          status,
+          vendor_id
         )
       `)
       .eq('customer_id', user.id)
@@ -38,14 +40,61 @@ function Cart({ user, onBack, onCheckout }) {
     if (error) {
       console.error('Cart loading error:', error)
       setMessage('Could not load your cart.')
+      setLoading(false)
+      return
+    }
+
+    const items = data || []
+    setCartItems(items)
+
+    // -------------------------------------------------------
+    // LOAD STORE NAMES FOR THE VENDORS IN THE CART
+    // -------------------------------------------------------
+
+    const vendorIds = [
+      ...new Set(
+        items
+          .map((item) => item.product?.vendor_id)
+          .filter(Boolean)
+      ),
+    ]
+
+    if (vendorIds.length > 0) {
+      const { data: storeData, error: storeError } =
+        await supabase
+          .from('stores')
+          .select(`
+            owner_id,
+            store_name
+          `)
+          .in('owner_id', vendorIds)
+
+      if (storeError) {
+        console.error(
+          'Store loading error:',
+          storeError
+        )
+      } else {
+        const storeMap = {}
+
+        ;(storeData || []).forEach((store) => {
+          storeMap[store.owner_id] =
+            store.store_name
+        })
+
+        setStores(storeMap)
+      }
     } else {
-      setCartItems(data || [])
+      setStores({})
     }
 
     setLoading(false)
   }
 
-  const updateQuantity = async (item, newQuantity) => {
+  const updateQuantity = async (
+    item,
+    newQuantity
+  ) => {
     if (newQuantity < 1) {
       removeItem(item)
       return
@@ -107,13 +156,15 @@ function Cart({ user, onBack, onCheckout }) {
         'Remove cart item error:',
         error
       )
+
       setMessage(
         'Could not remove item from your cart.'
       )
     } else {
       setCartItems((currentItems) =>
         currentItems.filter(
-          (cartItem) => cartItem.id !== item.id
+          (cartItem) =>
+            cartItem.id !== item.id
         )
       )
     }
@@ -128,17 +179,67 @@ function Cart({ user, onBack, onCheckout }) {
     )
   }
 
-  const cartTotal = cartItems.reduce(
-    (total, item) =>
-      total + getItemTotal(item),
-    0
+  // -------------------------------------------------------
+  // GROUP CART ITEMS BY VENDOR
+  // -------------------------------------------------------
+
+  const vendorGroups = cartItems.reduce(
+    (groups, item) => {
+      const vendorId =
+        item.product?.vendor_id
+
+      if (!vendorId) {
+        return groups
+      }
+
+      if (!groups[vendorId]) {
+        groups[vendorId] = []
+      }
+
+      groups[vendorId].push(item)
+
+      return groups
+    },
+    {}
   )
+
+  const vendorIds = Object.keys(vendorGroups)
 
   const totalItems = cartItems.reduce(
     (total, item) =>
       total + item.quantity,
     0
   )
+
+  const cartTotal = cartItems.reduce(
+    (total, item) =>
+      total + getItemTotal(item),
+    0
+  )
+
+  // -------------------------------------------------------
+  // CHECKOUT ONE VENDOR
+  // -------------------------------------------------------
+
+  const checkoutVendor = (vendorId) => {
+    if (!vendorId) {
+      return
+    }
+
+    try {
+      sessionStorage.setItem(
+        'uniabuja_checkout_vendor_id',
+        vendorId
+      )
+    } catch (error) {
+      console.error(
+        'Could not save selected vendor:',
+        error
+      )
+    }
+
+    onCheckout()
+  }
 
   return (
     <div className="cart-page">
@@ -226,154 +327,351 @@ function Cart({ user, onBack, onCheckout }) {
 
             <div className="cart-items">
 
-              {cartItems.map((item) => (
+              {/* ------------------------------------------------ */}
+              {/* VENDOR GROUPS */}
+              {/* ------------------------------------------------ */}
 
-                <div
-                  className="cart-item"
-                  key={item.id}
-                >
+              {vendorIds.map((vendorId) => {
 
+                const vendorItems =
+                  vendorGroups[vendorId]
+
+                const vendorTotal =
+                  vendorItems.reduce(
+                    (total, item) =>
+                      total +
+                      getItemTotal(item),
+                    0
+                  )
+
+                const storeName =
+                  stores[vendorId] ||
+                  'Vendor Store'
+
+                return (
                   <div
-                    className="cart-item-image"
+                    key={vendorId}
                     style={{
-                      width: '100px',
-                      height: '100px',
-                      minWidth: '100px',
-                      maxWidth: '100px',
-                      minHeight: '100px',
-                      maxHeight: '100px',
-                      flex: '0 0 100px',
-                      overflow: 'hidden',
-                      borderRadius: '10px',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      boxSizing: 'border-box',
+                      marginBottom: '24px',
+                      border: '1px solid #e5e7eb',
+                      borderRadius: '14px',
+                      padding: '16px',
+                      background: '#ffffff',
                     }}
                   >
 
-                    {item.product?.image_url ? (
+                    {/* VENDOR HEADER */}
 
-                      <img
-                        src={item.product.image_url}
-                        alt={item.product.name}
-                        style={{
-                          width: '100%',
-                          height: '100%',
-                          minWidth: '100%',
-                          minHeight: '100%',
-                          maxWidth: '100%',
-                          maxHeight: '100%',
-                          objectFit: 'cover',
-                          display: 'block',
-                        }}
-                      />
+                    <div
+                      style={{
+                        display: 'flex',
+                        justifyContent:
+                          'space-between',
+                        alignItems: 'center',
+                        gap: '12px',
+                        flexWrap: 'wrap',
+                        marginBottom: '16px',
+                      }}
+                    >
 
-                    ) : (
+                      <div>
 
-                      <span>
-                        🛍️
-                      </span>
+                        <p
+                          style={{
+                            margin: 0,
+                            fontSize: '12px',
+                            fontWeight: '700',
+                            letterSpacing:
+                              '0.08em',
+                            opacity: 0.65,
+                          }}
+                        >
+                          STORE
+                        </p>
 
+                        <h2
+                          style={{
+                            margin:
+                              '4px 0 0',
+                            fontSize: '20px',
+                          }}
+                        >
+                          {storeName}
+                        </h2>
+
+                        <p
+                          style={{
+                            margin:
+                              '4px 0 0',
+                            fontSize: '13px',
+                            opacity: 0.7,
+                          }}
+                        >
+                          {vendorItems.length}{' '}
+                          {vendorItems.length === 1
+                            ? 'product'
+                            : 'products'}
+                        </p>
+
+                      </div>
+
+                      <button
+                        type="button"
+                        className="primary-btn"
+                        onClick={() =>
+                          checkoutVendor(
+                            vendorId
+                          )
+                        }
+                      >
+                        Checkout from this store
+                      </button>
+
+                    </div>
+
+                    {/* PRODUCTS FROM THIS VENDOR */}
+
+                    {vendorItems.map(
+                      (item) => (
+
+                        <div
+                          className="cart-item"
+                          key={item.id}
+                          style={{
+                            marginBottom:
+                              '12px',
+                          }}
+                        >
+
+                          <div
+                            className="cart-item-image"
+                            style={{
+                              width: '100px',
+                              height: '100px',
+                              minWidth: '100px',
+                              maxWidth: '100px',
+                              minHeight: '100px',
+                              maxHeight: '100px',
+                              flex:
+                                '0 0 100px',
+                              overflow:
+                                'hidden',
+                              borderRadius:
+                                '10px',
+                              display: 'flex',
+                              alignItems:
+                                'center',
+                              justifyContent:
+                                'center',
+                              boxSizing:
+                                'border-box',
+                            }}
+                          >
+
+                            {item.product
+                              ?.image_url ? (
+
+                              <img
+                                src={
+                                  item
+                                    .product
+                                    .image_url
+                                }
+                                alt={
+                                  item
+                                    .product
+                                    .name
+                                }
+                                style={{
+                                  width: '100%',
+                                  height: '100%',
+                                  minWidth: '100%',
+                                  minHeight: '100%',
+                                  maxWidth: '100%',
+                                  maxHeight: '100%',
+                                  objectFit:
+                                    'cover',
+                                  display:
+                                    'block',
+                                }}
+                              />
+
+                            ) : (
+
+                              <span>
+                                🛍️
+                              </span>
+
+                            )}
+
+                          </div>
+
+                          <div className="cart-item-info">
+
+                            <span className="product-category">
+                              {
+                                item
+                                  .product
+                                  ?.category
+                              }
+                            </span>
+
+                            <h3>
+                              {
+                                item
+                                  .product
+                                  ?.name
+                              }
+                            </h3>
+
+                            <p>
+                              ₦
+                              {Number(
+                                item
+                                  .product
+                                  ?.price ||
+                                  0
+                              ).toLocaleString()}
+                            </p>
+
+                            <div className="quantity-controls">
+
+                              <button
+                                type="button"
+                                disabled={
+                                  updating ===
+                                  item.id
+                                }
+                                onClick={() =>
+                                  updateQuantity(
+                                    item,
+                                    item.quantity -
+                                      1
+                                  )
+                                }
+                              >
+                                −
+                              </button>
+
+                              <span>
+                                {item.quantity}
+                              </span>
+
+                              <button
+                                type="button"
+                                disabled={
+                                  updating ===
+                                    item.id ||
+                                  item.quantity >=
+                                    item.product
+                                      ?.stock
+                                }
+                                onClick={() =>
+                                  updateQuantity(
+                                    item,
+                                    item.quantity +
+                                      1
+                                  )
+                                }
+                              >
+                                +
+                              </button>
+
+                            </div>
+
+                            <button
+                              type="button"
+                              className="remove-btn"
+                              disabled={
+                                updating ===
+                                item.id
+                              }
+                              onClick={() =>
+                                removeItem(item)
+                              }
+                            >
+                              {updating ===
+                              item.id
+                                ? 'Removing...'
+                                : 'Remove'}
+                            </button>
+
+                          </div>
+
+                          <div className="cart-item-total">
+
+                            <strong>
+                              ₦
+                              {getItemTotal(
+                                item
+                              ).toLocaleString()}
+                            </strong>
+
+                          </div>
+
+                        </div>
+
+                      )
                     )}
 
-                  </div>
+                    {/* VENDOR SUBTOTAL */}
 
-                  <div className="cart-item-info">
+                    <div
+                      style={{
+                        borderTop:
+                          '1px solid #e5e7eb',
+                        marginTop: '12px',
+                        paddingTop: '12px',
+                        display: 'flex',
+                        justifyContent:
+                          'space-between',
+                        alignItems:
+                          'center',
+                        gap: '12px',
+                      }}
+                    >
 
-                    <span className="product-category">
-                      {item.product?.category}
-                    </span>
+                      <strong>
+                        Store subtotal
+                      </strong>
 
-                    <h3>
-                      {item.product?.name}
-                    </h3>
-
-                    <p>
-                      ₦
-                      {Number(
-                        item.product?.price || 0
-                      ).toLocaleString()}
-                    </p>
-
-                    <div className="quantity-controls">
-
-                      <button
-                        type="button"
-                        disabled={
-                          updating === item.id
-                        }
-                        onClick={() =>
-                          updateQuantity(
-                            item,
-                            item.quantity - 1
-                          )
-                        }
-                      >
-                        −
-                      </button>
-
-                      <span>
-                        {item.quantity}
-                      </span>
-
-                      <button
-                        type="button"
-                        disabled={
-                          updating === item.id ||
-                          item.quantity >=
-                            item.product?.stock
-                        }
-                        onClick={() =>
-                          updateQuantity(
-                            item,
-                            item.quantity + 1
-                          )
-                        }
-                      >
-                        +
-                      </button>
+                      <strong>
+                        ₦
+                        {vendorTotal.toLocaleString()}
+                      </strong>
 
                     </div>
 
                     <button
                       type="button"
-                      className="remove-btn"
-                      disabled={
-                        updating === item.id
-                      }
+                      className="primary-btn"
                       onClick={() =>
-                        removeItem(item)
+                        checkoutVendor(
+                          vendorId
+                        )
                       }
+                      style={{
+                        width: '100%',
+                        marginTop: '14px',
+                      }}
                     >
-                      {updating === item.id
-                        ? 'Removing...'
-                        : 'Remove'}
+                      Checkout from {storeName}
                     </button>
 
                   </div>
-
-                  <div className="cart-item-total">
-
-                    <strong>
-                      ₦
-                      {getItemTotal(
-                        item
-                      ).toLocaleString()}
-                    </strong>
-
-                  </div>
-
-                </div>
-
-              ))}
+                )
+              })}
 
             </div>
+
+            {/* ------------------------------------------------ */}
+            {/* CART SUMMARY */}
+            {/* ------------------------------------------------ */}
 
             <aside className="cart-summary">
 
               <h2>
-                Order Summary
+                Cart Summary
               </h2>
 
               <div className="summary-row">
@@ -384,6 +682,18 @@ function Cart({ user, onBack, onCheckout }) {
 
                 <span>
                   {totalItems}
+                </span>
+
+              </div>
+
+              <div className="summary-row">
+
+                <span>
+                  Vendors
+                </span>
+
+                <span>
+                  {vendorIds.length}
                 </span>
 
               </div>
@@ -426,13 +736,18 @@ function Cart({ user, onBack, onCheckout }) {
 
               </div>
 
-              <button
-                type="button"
-                className="primary-btn checkout-btn"
-                onClick={onCheckout}
+              <p
+                style={{
+                  marginTop: '14px',
+                  fontSize: '13px',
+                  lineHeight: '1.5',
+                  opacity: 0.75,
+                }}
               >
-                Proceed to Checkout
-              </button>
+                Products from different
+                stores are checked out
+                separately.
+              </p>
 
             </aside>
 

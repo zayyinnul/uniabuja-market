@@ -5,6 +5,8 @@ function Checkout({ user, onBack, onOrderCreated }) {
   const [cartItems, setCartItems] = useState([])
   const [zones, setZones] = useState([])
 
+  const [selectedVendorId, setSelectedVendorId] = useState('')
+
   const [loading, setLoading] = useState(true)
   const [placingOrder, setPlacingOrder] = useState(false)
   const [retryingPayment, setRetryingPayment] = useState(false)
@@ -37,6 +39,141 @@ function Checkout({ user, onBack, onOrderCreated }) {
   }, [])
 
   /*
+    Load the vendor selected from Cart.jsx.
+
+    Cart.jsx saves:
+      uniabuja_checkout_vendor_id
+
+    This makes Checkout show only products
+    belonging to that vendor.
+  */
+  const loadCart = async () => {
+    setLoading(true)
+    setMessage('')
+
+    try {
+      let vendorId = ''
+
+      try {
+        vendorId =
+          sessionStorage.getItem(
+            'uniabuja_checkout_vendor_id'
+          ) || ''
+      } catch (error) {
+        console.error(
+          'Could not read selected vendor:',
+          error
+        )
+      }
+
+      setSelectedVendorId(vendorId)
+
+      const { data, error } = await supabase
+        .from('cart_items')
+        .select(`
+          id,
+          product_id,
+          quantity,
+          products (
+            id,
+            name,
+            price,
+            image_url,
+            stock,
+            status,
+            vendor_id
+          )
+        `)
+        .eq('customer_id', user.id)
+        .order('created_at', {
+          ascending: true,
+        })
+
+      if (error) {
+        console.error(
+          'Checkout cart loading error:',
+          error
+        )
+
+        throw new Error(error.message)
+      }
+
+      let items = data || []
+
+      /*
+        Only keep products belonging to the
+        vendor selected from the cart.
+
+        If there is no selected vendor ID,
+        fall back to the full cart so we don't
+        unnecessarily break the existing flow.
+      */
+      if (vendorId) {
+        items = items.filter(
+          (item) =>
+            item.products?.vendor_id ===
+            vendorId
+        )
+      }
+
+      setCartItems(items)
+
+      /*
+        If a vendor was selected but that vendor's
+        products are no longer in the cart, clear
+        the selection and tell the user.
+      */
+      if (
+        vendorId &&
+        items.length === 0
+      ) {
+        setMessage(
+          'The selected store has no items in your cart.'
+        )
+      }
+    } catch (error) {
+      console.error(
+        'Checkout error:',
+        error
+      )
+
+      setMessage(
+        error.message ||
+        'Could not load your cart.'
+      )
+    }
+
+    setLoading(false)
+  }
+
+  const loadDeliveryZones = async () => {
+    const { data, error } = await supabase
+      .from('delivery_zones')
+      .select(
+        'id, name, is_active'
+      )
+      .eq('is_active', true)
+      .order('name', {
+        ascending: true,
+      })
+
+    if (error) {
+      console.error(
+        'Delivery zones error:',
+        error
+      )
+
+      setMessage(
+        'Could not load delivery areas.'
+      )
+
+      return
+    }
+
+    setZones(data || [])
+  }
+
+  /*
     Check whether the saved pending payment order
     is still valid.
 
@@ -50,7 +187,9 @@ function Checkout({ user, onBack, onOrderCreated }) {
 
       const { data, error } = await supabase
         .from('orders')
-        .select('id, status, payment_status')
+        .select(
+          'id, status, payment_status'
+        )
         .eq('id', pendingOrderId)
         .eq('customer_id', user.id)
         .maybeSingle()
@@ -74,15 +213,14 @@ function Checkout({ user, onBack, onOrderCreated }) {
     }
 
     checkPendingOrder()
-  }, [pendingOrderId, user.id])
+  }, [
+    pendingOrderId,
+    user.id,
+  ])
 
   /*
-    When returning from Paystack with the browser Back button,
-    the browser may restore the old React state instead of
-    reloading the page.
-
-    Reset the temporary payment state and re-check the
-    saved pending order.
+    When returning from Paystack with the browser
+    Back button, reset temporary payment state.
   */
   useEffect(() => {
     const handlePageShow = () => {
@@ -129,83 +267,6 @@ function Checkout({ user, onBack, onOrderCreated }) {
     cartItems,
     selectedZoneId,
   ])
-
-  const loadCart = async () => {
-    setLoading(true)
-    setMessage('')
-
-    try {
-      const { data, error } = await supabase
-        .from('cart_items')
-        .select(`
-          id,
-          product_id,
-          quantity,
-          products (
-            id,
-            name,
-            price,
-            image_url,
-            stock,
-            status
-          )
-        `)
-        .eq('customer_id', user.id)
-        .order('created_at', {
-          ascending: true,
-        })
-
-      if (error) {
-        console.error(
-          'Checkout cart loading error:',
-          error
-        )
-
-        throw new Error(error.message)
-      }
-
-      setCartItems(data || [])
-    } catch (error) {
-      console.error(
-        'Checkout error:',
-        error
-      )
-
-      setMessage(
-        error.message ||
-        'Could not load your cart.'
-      )
-    }
-
-    setLoading(false)
-  }
-
-  const loadDeliveryZones = async () => {
-    const { data, error } = await supabase
-      .from('delivery_zones')
-      .select(
-        'id, name, is_active'
-      )
-      .eq('is_active', true)
-      .order('name', {
-        ascending: true,
-      })
-
-    if (error) {
-      console.error(
-        'Delivery zones error:',
-        error
-      )
-
-      setMessage(
-        'Could not load delivery areas.'
-      )
-
-      return
-    }
-
-    setZones(data || [])
-  }
 
   const getProductTotal = () => {
     return cartItems.reduce(
@@ -604,10 +665,6 @@ function Checkout({ user, onBack, onOrderCreated }) {
   }
 
   const handleBack = () => {
-    /*
-      Clear only the temporary checkout payment state.
-      The actual order remains safely in the database.
-    */
     submittingRef.current = false
     setPlacingOrder(false)
     setRetryingPayment(false)
@@ -655,6 +712,7 @@ function Checkout({ user, onBack, onOrderCreated }) {
   if (loading) {
     return (
       <div className="loading-page">
+
         <h2>
           UniAbuja Market
         </h2>
@@ -664,7 +722,8 @@ function Checkout({ user, onBack, onOrderCreated }) {
             width: '34px',
             height: '34px',
             border: '4px solid #e5e7eb',
-            borderTop: '4px solid #16a34a',
+            borderTop:
+              '4px solid #16a34a',
             borderRadius: '50%',
             animation:
               'checkoutSpin 0.8s linear infinite',
@@ -682,12 +741,14 @@ function Checkout({ user, onBack, onOrderCreated }) {
               from {
                 transform: rotate(0deg);
               }
+
               to {
                 transform: rotate(360deg);
               }
             }
           `}
         </style>
+
       </div>
     )
   }
@@ -745,6 +806,44 @@ function Checkout({ user, onBack, onOrderCreated }) {
         </div>
 
 
+        {/* SELECTED STORE */}
+
+        {selectedVendorId &&
+          cartItems.length > 0 && (
+            <div
+              style={{
+                marginBottom: '18px',
+                padding: '12px 14px',
+                border:
+                  '1px solid #bbf7d0',
+                background:
+                  '#f0fdf4',
+                borderRadius: '10px',
+              }}
+            >
+              <strong
+                style={{
+                  color: '#166534',
+                }}
+              >
+                Store checkout
+              </strong>
+
+              <p
+                style={{
+                  margin:
+                    '4px 0 0',
+                  fontSize: '13px',
+                  color: '#4b5563',
+                }}
+              >
+                You are checking out only the
+                products from the selected store.
+              </p>
+            </div>
+          )}
+
+
         {/* GENERAL MESSAGE */}
 
         {message && (
@@ -774,6 +873,7 @@ function Checkout({ user, onBack, onOrderCreated }) {
               textAlign: 'left',
             }}
           >
+
             <h3>
               Payment not completed
             </h3>
@@ -802,6 +902,7 @@ function Checkout({ user, onBack, onOrderCreated }) {
                 ? 'Opening payment...'
                 : 'Retry Payment'}
             </button>
+
           </div>
         )}
 
@@ -815,11 +916,12 @@ function Checkout({ user, onBack, onOrderCreated }) {
             </div>
 
             <h3>
-              Your cart is empty
+              No products from this store
             </h3>
 
             <p>
-              Add some products before checking out.
+              The selected store no longer has
+              products in your cart.
             </p>
 
             <button
@@ -854,6 +956,7 @@ function Checkout({ user, onBack, onOrderCreated }) {
               >
 
                 <div>
+
                   <p
                     style={{
                       margin: 0,
@@ -875,6 +978,7 @@ function Checkout({ user, onBack, onOrderCreated }) {
                   >
                     Order summary
                   </h2>
+
                 </div>
 
                 <span
@@ -899,6 +1003,7 @@ function Checkout({ user, onBack, onOrderCreated }) {
                 </span>
 
               </div>
+
 
               <div className="checkout-items">
 
@@ -946,10 +1051,12 @@ function Checkout({ user, onBack, onOrderCreated }) {
 
                           <img
                             src={
-                              item.products.image_url
+                              item.products
+                                .image_url
                             }
                             alt={
-                              item.products.name
+                              item.products
+                                .name
                             }
                             style={{
                               width:
@@ -986,6 +1093,7 @@ function Checkout({ user, onBack, onOrderCreated }) {
 
                       </div>
 
+
                       <div
                         className="checkout-item-info"
                         style={{
@@ -1017,6 +1125,7 @@ function Checkout({ user, onBack, onOrderCreated }) {
                         </p>
 
                       </div>
+
 
                       <strong
                         style={{
@@ -1055,6 +1164,7 @@ function Checkout({ user, onBack, onOrderCreated }) {
                 <div
                   className="checkout-total"
                 >
+
                   <span>
                     Products
                   </span>
@@ -1064,7 +1174,9 @@ function Checkout({ user, onBack, onOrderCreated }) {
                       productTotal
                     )}
                   </strong>
+
                 </div>
+
 
                 <div
                   className="checkout-total"
@@ -1072,6 +1184,7 @@ function Checkout({ user, onBack, onOrderCreated }) {
                     marginTop: '8px',
                   }}
                 >
+
                   <span>
                     Delivery
                   </span>
@@ -1088,6 +1201,7 @@ function Checkout({ user, onBack, onOrderCreated }) {
                           deliveryFee
                         )}
                   </strong>
+
                 </div>
 
 
@@ -1109,6 +1223,7 @@ function Checkout({ user, onBack, onOrderCreated }) {
                 >
 
                   <div>
+
                     <span
                       style={{
                         display:
@@ -1144,6 +1259,7 @@ function Checkout({ user, onBack, onOrderCreated }) {
                         checkoutTotal
                       )}
                     </strong>
+
                   </div>
 
                   <span
@@ -1248,6 +1364,7 @@ function Checkout({ user, onBack, onOrderCreated }) {
                   }}
                 >
                   Full name
+
                   <span
                     style={{
                       color:
@@ -1256,6 +1373,7 @@ function Checkout({ user, onBack, onOrderCreated }) {
                   >
                     {' '}*
                   </span>
+
                 </label>
 
                 <input
@@ -1331,6 +1449,7 @@ function Checkout({ user, onBack, onOrderCreated }) {
                   }}
                 >
                   Phone number
+
                   <span
                     style={{
                       color:
@@ -1339,6 +1458,7 @@ function Checkout({ user, onBack, onOrderCreated }) {
                   >
                     {' '}*
                   </span>
+
                 </label>
 
                 <input
@@ -1415,6 +1535,7 @@ function Checkout({ user, onBack, onOrderCreated }) {
                   }}
                 >
                   Delivery area
+
                   <span
                     style={{
                       color:
@@ -1423,6 +1544,7 @@ function Checkout({ user, onBack, onOrderCreated }) {
                   >
                     {' '}*
                   </span>
+
                 </label>
 
                 <select
@@ -1513,6 +1635,7 @@ function Checkout({ user, onBack, onOrderCreated }) {
                   }}
                 >
                   Delivery address
+
                   <span
                     style={{
                       color:
@@ -1521,6 +1644,7 @@ function Checkout({ user, onBack, onOrderCreated }) {
                   >
                     {' '}*
                   </span>
+
                 </label>
 
                 <textarea
@@ -1587,6 +1711,7 @@ function Checkout({ user, onBack, onOrderCreated }) {
                       '20px',
                   }}
                 >
+
                   <p
                     style={{
                       margin: 0,
@@ -1604,6 +1729,7 @@ function Checkout({ user, onBack, onOrderCreated }) {
                     “Male Hostel B, Block 3,
                     Room 214, near the main staircase.”
                   </p>
+
                 </div>
 
 
@@ -1751,6 +1877,7 @@ function Checkout({ user, onBack, onOrderCreated }) {
                   >
 
                     <div>
+
                       <span
                         style={{
                           display:
@@ -1784,6 +1911,7 @@ function Checkout({ user, onBack, onOrderCreated }) {
                           checkoutTotal
                         )}
                       </strong>
+
                     </div>
 
                     <span
@@ -1837,6 +1965,7 @@ function Checkout({ user, onBack, onOrderCreated }) {
                         )}`}
                   </button>
                 )}
+
 
                 {!pendingOrderId && (
                   <p
