@@ -464,275 +464,337 @@ function Notifications({ user }) {
       </button>
 
       {open && (
-        <div
-          style={{
-            position: 'absolute',
-            right: 0,
-            top: 'calc(100% + 10px)',
-            width: 'min(380px, calc(100vw - 24px))',
-            maxHeight: '75vh',
-            overflowY: 'auto',
-            background: '#fff',
-            border: '1px solid #e5e7eb',
-            borderRadius: '14px',
-            boxShadow:
-              '0 12px 30px rgba(0,0,0,0.15)',
-            zIndex: 1000,
-            padding: '14px',
-          }}
-        >
-          {/* PUSH NOTIFICATION SETTINGS */}
+        <>
+          {/* BACKDROP */}
+          <div
+            onClick={() => setOpen(false)}
+            style={{
+              position: 'fixed',
+              inset: 0,
+              background: 'rgba(0,0,0,0.18)',
+              zIndex: 999,
+            }}
+          />
+
+          {/* CENTERED NOTIFICATION PANEL */}
           <div
             style={{
-              marginBottom: '14px',
-              paddingBottom: '14px',
-              borderBottom: '1px solid #e5e7eb',
+              position: 'fixed',
+              left: '50%',
+              top: '50%',
+              transform: 'translate(-50%, -50%)',
+              width: 'min(380px, calc(100vw - 32px))',
+              maxHeight: '78vh',
+              overflowY: 'auto',
+              background: '#fff',
+              border: '1px solid #e5e7eb',
+              borderRadius: '16px',
+              boxShadow:
+                '0 18px 45px rgba(0,0,0,0.20)',
+              zIndex: 1000,
+              padding: '16px',
+              boxSizing: 'border-box',
             }}
           >
-            <strong>
-              📱 App notifications
-            </strong>
-
-            {pushEnabled ? (
-              <>
-                <p
-                  style={{
-                    margin: '6px 0 0',
-                    fontSize: '13px',
-                    color: '#16a34a',
-                    fontWeight: '600',
-                  }}
-                >
-                  ✓ Push notifications enabled on
-                  this device
-                </p>
-
-                <button
-                  type="button"
-                  onClick={
-                    refreshPushSubscription
-                  }
-                  disabled={pushLoading}
-                  style={{
-                    marginTop: '9px',
-                    padding: '8px 12px',
-                    border:
-                      '1px solid #d1d5db',
-                    background: '#fff',
-                    borderRadius: '7px',
-                    cursor: pushLoading
-                      ? 'not-allowed'
-                      : 'pointer',
-                    fontSize: '12px',
-                    fontWeight: '600',
-                  }}
-                >
-                  {pushLoading
-                    ? 'Refreshing...'
-                    : 'Refresh push connection'}
-                </button>
-              </>
-            ) : (
-              <>
-                <p
-                  style={{
-                    margin: '6px 0 0',
-                    fontSize: '13px',
-                    color: '#6b7280',
-                  }}
-                >
-                  Receive notifications even when
-                  the app is not open.
-                </p>
-
-                <button
-                  type="button"
-                  onClick={
-                    enablePushNotifications
-                  }
-                  disabled={pushLoading}
-                  style={{
-                    marginTop: '9px',
-                    padding: '9px 14px',
-                    border: 'none',
-                    background: '#15803d',
-                    color: '#fff',
-                    borderRadius: '8px',
-                    cursor: pushLoading
-                      ? 'not-allowed'
-                      : 'pointer',
-                    fontSize: '13px',
-                    fontWeight: '700',
-                    width: '100%',
-                  }}
-                >
-                  {pushLoading
-                    ? 'Enabling...'
-                    : '🔔 Enable app notifications'}
-                </button>
-              </>
-            )}
-
-            {pushMessage && (
-              <p
-                style={{
-                  margin: '7px 0 0',
-                  fontSize: '12px',
-                  color: '#374151',
-                }}
-              >
-                {pushMessage}
-              </p>
-            )}
-          </div>
-
-          {/* NOTIFICATION HEADER */}
-          <div
-            style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              gap: '10px',
-              marginBottom: '12px',
-            }}
-          >
-            <strong
+            {/* PUSH NOTIFICATION SETTINGS */}
+            <div
               style={{
-                fontSize: '16px',
+                marginBottom: '16px',
+                paddingBottom: '16px',
+                borderBottom:
+                  '1px solid #e5e7eb',
               }}
             >
-              Notifications
-            </strong>
-
-            {unreadCount > 0 && (
-              <button
-                type="button"
-                onClick={markAllAsRead}
-                style={{
-                  border:
-                    '1px solid #15803d',
-                  background: '#15803d',
-                  color: '#fff',
-                  borderRadius: '7px',
-                  padding: '7px 10px',
-                  cursor: 'pointer',
-                  fontSize: '12px',
-                  fontWeight: '700',
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                ✓ Mark all read
-              </button>
-            )}
-          </div>
-
-          {/* NOTIFICATIONS */}
-          {loading ? (
-            <p>Loading notifications...</p>
-          ) : notifications.length === 0 ? (
-            <p
-              style={{
-                color: '#6b7280',
-                fontSize: '14px',
-              }}
-            >
-              You don't have any notifications yet.
-            </p>
-          ) : (
-            notifications.map((notification) => (
               <div
-                key={notification.id}
-                onClick={() =>
-                  !notification.is_read &&
-                  markAsRead(notification.id)
-                }
                 style={{
-                  padding: '13px',
-                  marginBottom: '9px',
-                  borderRadius: '10px',
-                  background:
-                    notification.is_read
-                      ? '#f9fafb'
-                      : '#eff6ff',
-                  border:
-                    notification.is_read
-                      ? '1px solid #e5e7eb'
-                      : '1px solid #bfdbfe',
-                  cursor: notification.is_read
-                    ? 'default'
-                    : 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: '10px',
+                  marginBottom: '6px',
                 }}
               >
                 <strong
                   style={{
-                    display: 'block',
-                    fontSize: '14px',
+                    fontSize: '16px',
                   }}
                 >
-                  {notification.title}
+                  📱 App notifications
                 </strong>
 
-                <p
+                <button
+                  type="button"
+                  onClick={() => setOpen(false)}
                   style={{
-                    margin: '6px 0',
-                    fontSize: '14px',
-                    lineHeight: '1.45',
+                    border: 'none',
+                    background: '#f3f4f6',
+                    color: '#374151',
+                    borderRadius: '999px',
+                    width: '32px',
+                    height: '32px',
+                    cursor: 'pointer',
+                    fontSize: '18px',
+                    lineHeight: '1',
                   }}
+                  aria-label="Close notifications"
                 >
-                  {notification.message}
-                </p>
+                  ×
+                </button>
+              </div>
 
-                <div
-                  style={{
-                    marginTop: '9px',
-                    display: 'flex',
-                    justifyContent:
-                      'space-between',
-                    alignItems: 'center',
-                    gap: '10px',
-                    flexWrap: 'wrap',
-                  }}
-                >
-                  <small
+              {pushEnabled ? (
+                <>
+                  <p
                     style={{
-                      color: '#6b7280',
+                      margin: '6px 0 10px',
+                      fontSize: '13px',
+                      color: '#16a34a',
+                      fontWeight: '600',
                     }}
                   >
-                    {formatDate(
-                      notification.created_at
-                    )}
-                  </small>
+                    ✓ Push notifications enabled
+                    on this device
+                  </p>
 
-                  {!notification.is_read && (
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        markAsRead(
-                          notification.id
-                        )
-                      }}
+                  <button
+                    type="button"
+                    onClick={
+                      refreshPushSubscription
+                    }
+                    disabled={pushLoading}
+                    style={{
+                      display: 'block',
+                      width: '100%',
+                      marginTop: '8px',
+                      padding: '10px 12px',
+                      border:
+                        '1px solid #15803d',
+                      background: '#fff',
+                      color: '#15803d',
+                      borderRadius: '8px',
+                      cursor: pushLoading
+                        ? 'not-allowed'
+                        : 'pointer',
+                      fontSize: '13px',
+                      fontWeight: '700',
+                      textAlign: 'center',
+                    }}
+                  >
+                    {pushLoading
+                      ? 'Refreshing...'
+                      : '🔄 Refresh push notifications'}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <p
+                    style={{
+                      margin: '6px 0 10px',
+                      fontSize: '13px',
+                      color: '#6b7280',
+                      lineHeight: '1.45',
+                    }}
+                  >
+                    Receive notifications even
+                    when the app is not open.
+                  </p>
+
+                  <button
+                    type="button"
+                    onClick={
+                      enablePushNotifications
+                    }
+                    disabled={pushLoading}
+                    style={{
+                      display: 'block',
+                      width: '100%',
+                      marginTop: '8px',
+                      padding: '10px 14px',
+                      border: 'none',
+                      background: '#15803d',
+                      color: '#fff',
+                      borderRadius: '8px',
+                      cursor: pushLoading
+                        ? 'not-allowed'
+                        : 'pointer',
+                      fontSize: '13px',
+                      fontWeight: '700',
+                      textAlign: 'center',
+                    }}
+                  >
+                    {pushLoading
+                      ? 'Enabling...'
+                      : '🔔 Enable app notifications'}
+                  </button>
+                </>
+              )}
+
+              {pushMessage && (
+                <p
+                  style={{
+                    margin: '9px 0 0',
+                    padding: '9px 10px',
+                    background: '#f9fafb',
+                    borderRadius: '8px',
+                    fontSize: '12px',
+                    color: '#374151',
+                    lineHeight: '1.4',
+                  }}
+                >
+                  {pushMessage}
+                </p>
+              )}
+            </div>
+
+            {/* NOTIFICATION HEADER */}
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                gap: '10px',
+                marginBottom: '12px',
+              }}
+            >
+              <strong
+                style={{
+                  fontSize: '16px',
+                }}
+              >
+                Notifications
+              </strong>
+
+              {unreadCount > 0 && (
+                <button
+                  type="button"
+                  onClick={markAllAsRead}
+                  style={{
+                    border:
+                      '1px solid #15803d',
+                    background: '#15803d',
+                    color: '#fff',
+                    borderRadius: '7px',
+                    padding: '7px 10px',
+                    cursor: 'pointer',
+                    fontSize: '12px',
+                    fontWeight: '700',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  ✓ Mark all read
+                </button>
+              )}
+            </div>
+
+            {/* NOTIFICATIONS */}
+            {loading ? (
+              <p>Loading notifications...</p>
+            ) : notifications.length === 0 ? (
+              <p
+                style={{
+                  color: '#6b7280',
+                  fontSize: '14px',
+                }}
+              >
+                You don't have any notifications
+                yet.
+              </p>
+            ) : (
+              notifications.map((notification) => (
+                <div
+                  key={notification.id}
+                  onClick={() =>
+                    !notification.is_read &&
+                    markAsRead(notification.id)
+                  }
+                  style={{
+                    padding: '13px',
+                    marginBottom: '9px',
+                    borderRadius: '10px',
+                    background:
+                      notification.is_read
+                        ? '#f9fafb'
+                        : '#eff6ff',
+                    border:
+                      notification.is_read
+                        ? '1px solid #e5e7eb'
+                        : '1px solid #bfdbfe',
+                    cursor: notification.is_read
+                      ? 'default'
+                      : 'pointer',
+                  }}
+                >
+                  <strong
+                    style={{
+                      display: 'block',
+                      fontSize: '14px',
+                    }}
+                  >
+                    {notification.title}
+                  </strong>
+
+                  <p
+                    style={{
+                      margin: '6px 0',
+                      fontSize: '14px',
+                      lineHeight: '1.45',
+                    }}
+                  >
+                    {notification.message}
+                  </p>
+
+                  <div
+                    style={{
+                      marginTop: '9px',
+                      display: 'flex',
+                      justifyContent:
+                        'space-between',
+                      alignItems: 'center',
+                      gap: '10px',
+                      flexWrap: 'wrap',
+                    }}
+                  >
+                    <small
                       style={{
-                        border:
-                          '1px solid #15803d',
-                        background: '#fff',
-                        color: '#15803d',
-                        borderRadius: '7px',
-                        padding: '7px 10px',
-                        fontSize: '12px',
-                        fontWeight: '700',
-                        cursor: 'pointer',
-                        whiteSpace: 'nowrap',
+                        color: '#6b7280',
                       }}
                     >
-                      ✓ Mark as read
-                    </button>
-                  )}
+                      {formatDate(
+                        notification.created_at
+                      )}
+                    </small>
+
+                    {!notification.is_read && (
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          markAsRead(
+                            notification.id
+                          )
+                        }}
+                        style={{
+                          border:
+                            '1px solid #15803d',
+                          background: '#fff',
+                          color: '#15803d',
+                          borderRadius: '7px',
+                          padding: '7px 10px',
+                          fontSize: '12px',
+                          fontWeight: '700',
+                          cursor: 'pointer',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        ✓ Mark as read
+                      </button>
+                    )}
+                  </div>
                 </div>
-              </div>
-            ))
-          )}
-        </div>
+              ))
+            )}
+          </div>
+        </>
       )}
     </div>
   )
