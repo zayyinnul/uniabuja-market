@@ -9,14 +9,23 @@ export default defineConfig({
       registerType: 'autoUpdate',
 
       manifest: {
-        name: 'UniAbuja Market',
-        short_name: 'UniAbuja Market',
-        description: 'The marketplace for University of Abuja students.',
-        start_url: '/',
-        display: 'standalone',
-        background_color: '#ffffff',
-        theme_color: '#ffffff',
-      },
+  name: 'UniAbuja Market',
+  short_name: 'UniAbuja Market',
+  description: 'The marketplace for University of Abuja students.',
+  start_url: '/',
+  display: 'standalone',
+  background_color: '#ffffff',
+  theme_color: '#ffffff',
+
+  icons: [
+    {
+      src: '/uniabuja-logo.jpeg',
+      sizes: '512x512',
+      type: 'image/jpeg',
+      purpose: 'any maskable',
+    },
+  ],
+},
 
       workbox: {
         runtimeCaching: [
