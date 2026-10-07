@@ -19,7 +19,7 @@ export default defineConfig({
 
   icons: [
     {
-      src: '/uniabuja-logo.jpeg',
+      src: '/uniabuja-logo.png',
       sizes: '512x512',
       type: 'image/jpeg',
       purpose: 'any maskable',
