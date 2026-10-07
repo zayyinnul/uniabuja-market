@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { supabase } from './lib/supabase'
 
 function urlBase64ToUint8Array(base64String) {
@@ -7,8 +8,7 @@ function urlBase64ToUint8Array(base64String) {
   )
 
   const base64 = (
-    base64String +
-    padding
+    base64String + padding
   )
     .replace(/-/g, '+')
     .replace(/_/g, '/')
@@ -100,6 +100,7 @@ function Notifications({ user }) {
         'Notification loading error:',
         error
       )
+
       setNotifications([])
     } else {
       setNotifications(data || [])
@@ -129,8 +130,11 @@ function Notifications({ user }) {
         return
       }
 
-      const p256dh = subscription.getKey('p256dh')
-      const auth = subscription.getKey('auth')
+      const p256dh =
+        subscription.getKey('p256dh')
+
+      const auth =
+        subscription.getKey('auth')
 
       if (!p256dh || !auth) {
         setPushEnabled(false)
@@ -141,7 +145,10 @@ function Notifications({ user }) {
         .from('push_subscriptions')
         .select('id')
         .eq('user_id', user.id)
-        .eq('endpoint', subscription.endpoint)
+        .eq(
+          'endpoint',
+          subscription.endpoint
+        )
         .maybeSingle()
 
       if (error) {
@@ -149,6 +156,7 @@ function Notifications({ user }) {
           'Push subscription database check error:',
           error
         )
+
         setPushEnabled(false)
         return
       }
@@ -159,6 +167,7 @@ function Notifications({ user }) {
         'Push subscription check error:',
         error
       )
+
       setPushEnabled(false)
     }
   }
@@ -166,8 +175,11 @@ function Notifications({ user }) {
   const savePushSubscription = async (
     subscription
   ) => {
-    const p256dh = subscription.getKey('p256dh')
-    const auth = subscription.getKey('auth')
+    const p256dh =
+      subscription.getKey('p256dh')
+
+    const auth =
+      subscription.getKey('auth')
 
     if (!p256dh || !auth) {
       throw new Error(
@@ -185,10 +197,12 @@ function Notifications({ user }) {
             arrayBufferToBase64Url(p256dh),
           auth:
             arrayBufferToBase64Url(auth),
-          updated_at: new Date().toISOString(),
+          updated_at:
+            new Date().toISOString(),
         },
         {
-          onConflict: 'user_id,endpoint',
+          onConflict:
+            'user_id,endpoint',
         }
       )
 
@@ -208,6 +222,7 @@ function Notifications({ user }) {
       setPushMessage(
         'Push notifications are not supported on this browser.'
       )
+
       return
     }
 
@@ -221,6 +236,7 @@ function Notifications({ user }) {
         setPushMessage(
           'Notification permission was not granted.'
         )
+
         return
       }
 
@@ -248,9 +264,12 @@ function Notifications({ user }) {
           })
       }
 
-      await savePushSubscription(subscription)
+      await savePushSubscription(
+        subscription
+      )
 
       setPushEnabled(true)
+
       setPushMessage(
         'Notifications enabled on this device.'
       )
@@ -269,103 +288,120 @@ function Notifications({ user }) {
     }
   }
 
-  const refreshPushSubscription = async () => {
-    setPushMessage('')
-    setPushLoading(true)
+  const refreshPushSubscription =
+    async () => {
+      setPushMessage('')
+      setPushLoading(true)
 
-    try {
-      if (
-        !('serviceWorker' in navigator) ||
-        !('PushManager' in window) ||
-        !('Notification' in window)
-      ) {
-        throw new Error(
-          'Push notifications are not supported on this browser.'
-        )
-      }
-
-      if (Notification.permission !== 'granted') {
-        const permission =
-          await Notification.requestPermission()
-
-        if (permission !== 'granted') {
+      try {
+        if (
+          !('serviceWorker' in navigator) ||
+          !('PushManager' in window) ||
+          !('Notification' in window)
+        ) {
           throw new Error(
-            'Notification permission was not granted.'
+            'Push notifications are not supported on this browser.'
           )
         }
-      }
 
-      const registration =
-        await navigator.serviceWorker.ready
+        if (
+          Notification.permission !==
+          'granted'
+        ) {
+          const permission =
+            await Notification.requestPermission()
 
-      const oldSubscription =
-        await registration.pushManager.getSubscription()
+          if (permission !== 'granted') {
+            throw new Error(
+              'Notification permission was not granted.'
+            )
+          }
+        }
 
-      if (oldSubscription) {
-        const oldEndpoint =
-          oldSubscription.endpoint
+        const registration =
+          await navigator.serviceWorker.ready
 
-        await oldSubscription.unsubscribe()
+        const oldSubscription =
+          await registration.pushManager.getSubscription()
 
-        const { error: deleteError } =
-          await supabase
-            .from('push_subscriptions')
-            .delete()
-            .eq('user_id', user.id)
-            .eq('endpoint', oldEndpoint)
+        if (oldSubscription) {
+          const oldEndpoint =
+            oldSubscription.endpoint
 
-        if (deleteError) {
-          console.warn(
-            'Could not remove old push subscription from database:',
-            deleteError
+          await oldSubscription.unsubscribe()
+
+          const { error: deleteError } =
+            await supabase
+              .from('push_subscriptions')
+              .delete()
+              .eq(
+                'user_id',
+                user.id
+              )
+              .eq(
+                'endpoint',
+                oldEndpoint
+              )
+
+          if (deleteError) {
+            console.warn(
+              'Could not remove old push subscription from database:',
+              deleteError
+            )
+          }
+        }
+
+        const publicKey =
+          import.meta.env.VITE_VAPID_PUBLIC_KEY
+
+        if (!publicKey) {
+          throw new Error(
+            'VITE_VAPID_PUBLIC_KEY is missing.'
           )
         }
-      }
 
-      const publicKey =
-        import.meta.env.VITE_VAPID_PUBLIC_KEY
+        const newSubscription =
+          await registration.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey:
+              urlBase64ToUint8Array(
+                publicKey
+              ),
+          })
 
-      if (!publicKey) {
-        throw new Error(
-          'VITE_VAPID_PUBLIC_KEY is missing.'
+        await savePushSubscription(
+          newSubscription
         )
+
+        setPushEnabled(true)
+
+        setPushMessage(
+          'Push connection refreshed successfully.'
+        )
+      } catch (error) {
+        console.error(
+          'Push subscription refresh error:',
+          error
+        )
+
+        setPushMessage(
+          error?.message ||
+            'Could not refresh push notifications.'
+        )
+      } finally {
+        setPushLoading(false)
       }
-
-      const newSubscription =
-        await registration.pushManager.subscribe({
-          userVisibleOnly: true,
-          applicationServerKey:
-            urlBase64ToUint8Array(publicKey),
-        })
-
-      await savePushSubscription(
-        newSubscription
-      )
-
-      setPushEnabled(true)
-      setPushMessage(
-        'Push connection refreshed successfully.'
-      )
-    } catch (error) {
-      console.error(
-        'Push subscription refresh error:',
-        error
-      )
-
-      setPushMessage(
-        error?.message ||
-          'Could not refresh push notifications.'
-      )
-    } finally {
-      setPushLoading(false)
     }
-  }
 
-  const unreadCount = notifications.filter(
-    (notification) => !notification.is_read
-  ).length
+  const unreadCount =
+    notifications.filter(
+      (notification) =>
+        !notification.is_read
+    ).length
 
-  const markAsRead = async (notificationId) => {
+  const markAsRead = async (
+    notificationId
+  ) => {
     const { error } = await supabase
       .from('notifications')
       .update({
@@ -379,6 +415,7 @@ function Notifications({ user }) {
         'Notification read error:',
         error
       )
+
       return
     }
 
@@ -408,6 +445,7 @@ function Notifications({ user }) {
         'Mark all notifications error:',
         error
       )
+
       return
     }
 
@@ -427,6 +465,673 @@ function Notifications({ user }) {
     return null
   }
 
+  const notificationPanel =
+    open &&
+    typeof document !== 'undefined'
+      ? createPortal(
+          <>
+            {/* BACKDROP */}
+            <div
+              onClick={() => setOpen(false)}
+              style={{
+                position: 'fixed',
+                inset: 0,
+                background:
+                  'rgba(0,0,0,0.25)',
+                zIndex: 9998,
+              }}
+            />
+
+            {/* CENTERING WRAPPER */}
+            <div
+              style={{
+                position: 'fixed',
+                inset: 0,
+                zIndex: 9999,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                padding: '12px',
+                boxSizing: 'border-box',
+                pointerEvents: 'none',
+              }}
+            >
+              {/* MAIN PANEL */}
+              <div
+                onClick={(event) =>
+                  event.stopPropagation()
+                }
+                style={{
+                  width:
+                    'min(760px, calc(100vw - 24px))',
+                  height:
+                    'min(620px, calc(100vh - 24px))',
+                  maxHeight:
+                    'calc(100vh - 24px)',
+                  background: '#fff',
+                  border:
+                    '1px solid #e5e7eb',
+                  borderRadius: '16px',
+                  boxShadow:
+                    '0 20px 55px rgba(0,0,0,0.25)',
+                  boxSizing: 'border-box',
+                  display: 'grid',
+                  gridTemplateColumns:
+                    '230px minmax(0, 1fr)',
+                  overflow: 'hidden',
+                  pointerEvents: 'auto',
+                }}
+              >
+                {/* ========================= */}
+                {/* LEFT SIDE: PUSH SETTINGS */}
+                {/* ========================= */}
+
+                <div
+                  style={{
+                    background: '#f8fafc',
+                    borderRight:
+                      '1px solid #e5e7eb',
+                    padding: '16px',
+                    boxSizing: 'border-box',
+                    overflowY: 'auto',
+                  }}
+                >
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent:
+                        'space-between',
+                      gap: '8px',
+                      marginBottom: '16px',
+                    }}
+                  >
+                    <strong
+                      style={{
+                        fontSize: '16px',
+                        color: '#111827',
+                      }}
+                    >
+                      📱 App notifications
+                    </strong>
+
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setOpen(false)
+                      }
+                      aria-label="Close notifications"
+                      style={{
+                        border: 'none',
+                        background:
+                          'transparent',
+                        color: '#6b7280',
+                        fontSize: '24px',
+                        lineHeight: 1,
+                        cursor: 'pointer',
+                        padding: '2px 5px',
+                      }}
+                    >
+                      ×
+                    </button>
+                  </div>
+
+                  {pushEnabled ? (
+                    <>
+                      <div
+                        style={{
+                          padding:
+                            '11px',
+                          background:
+                            '#f0fdf4',
+                          border:
+                            '1px solid #bbf7d0',
+                          borderRadius:
+                            '9px',
+                          color:
+                            '#166534',
+                          fontSize:
+                            '13px',
+                          lineHeight:
+                            '1.45',
+                        }}
+                      >
+                        <strong>
+                          ✓ Push notifications
+                          enabled on this
+                          device
+                        </strong>
+
+                        <div
+                          style={{
+                            marginTop:
+                              '6px',
+                          }}
+                        >
+                          This device is
+                          registered to receive
+                          UniAbuja Market
+                          notifications.
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={
+                          refreshPushSubscription
+                        }
+                        disabled={
+                          pushLoading
+                        }
+                        style={{
+                          width: '100%',
+                          minHeight:
+                            '44px',
+                          marginTop:
+                            '10px',
+                          padding:
+                            '10px',
+                          border:
+                            'none',
+                          borderRadius:
+                            '8px',
+                          background:
+                            '#15803d',
+                          color: '#fff',
+                          cursor:
+                            pushLoading
+                              ? 'not-allowed'
+                              : 'pointer',
+                          fontSize:
+                            '13px',
+                          fontWeight:
+                            '700',
+                          opacity:
+                            pushLoading
+                              ? 0.7
+                              : 1,
+                        }}
+                      >
+                        {pushLoading
+                          ? 'Refreshing...'
+                          : '🔄 Refresh push notifications'}
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <div
+                        style={{
+                          padding:
+                            '11px',
+                          background:
+                            '#fff',
+                          border:
+                            '1px solid #e5e7eb',
+                          borderRadius:
+                            '9px',
+                          color:
+                            '#4b5563',
+                          fontSize:
+                            '13px',
+                          lineHeight:
+                            '1.5',
+                        }}
+                      >
+                        Enable app notifications
+                        to receive important
+                        updates about your
+                        orders, deliveries and
+                        account.
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={
+                          enablePushNotifications
+                        }
+                        disabled={
+                          pushLoading
+                        }
+                        style={{
+                          width: '100%',
+                          minHeight:
+                            '44px',
+                          marginTop:
+                            '10px',
+                          padding:
+                            '10px',
+                          border:
+                            'none',
+                          borderRadius:
+                            '8px',
+                          background:
+                            '#15803d',
+                          color: '#fff',
+                          cursor:
+                            pushLoading
+                              ? 'not-allowed'
+                              : 'pointer',
+                          fontSize:
+                            '13px',
+                          fontWeight:
+                            '700',
+                          opacity:
+                            pushLoading
+                              ? 0.7
+                              : 1,
+                        }}
+                      >
+                        {pushLoading
+                          ? 'Enabling...'
+                          : '🔔 Enable app notifications'}
+                      </button>
+                    </>
+                  )}
+
+                  {pushMessage && (
+                    <div
+                      style={{
+                        marginTop:
+                          '10px',
+                        padding:
+                          '9px 10px',
+                        background:
+                          '#fff',
+                        border:
+                          '1px solid #e5e7eb',
+                        borderRadius:
+                          '8px',
+                        color:
+                          '#374151',
+                        fontSize:
+                          '12px',
+                        lineHeight:
+                          '1.45',
+                      }}
+                    >
+                      {pushMessage}
+                    </div>
+                  )}
+
+                  <div
+                    style={{
+                      marginTop:
+                        '20px',
+                      paddingTop:
+                        '15px',
+                      borderTop:
+                        '1px solid #e5e7eb',
+                      color:
+                        '#6b7280',
+                      fontSize:
+                        '12px',
+                      lineHeight:
+                        '1.5',
+                    }}
+                  >
+                    Push notifications let
+                    UniAbuja Market send
+                    important updates to this
+                    device even when the app is
+                    closed.
+                  </div>
+                </div>
+
+                {/* ========================= */}
+                {/* RIGHT SIDE: NOTIFICATIONS */}
+                {/* ========================= */}
+
+                <div
+                  style={{
+                    minWidth: 0,
+                    minHeight: 0,
+                    display: 'flex',
+                    flexDirection:
+                      'column',
+                    overflow: 'hidden',
+                  }}
+                >
+                  {/* HEADER */}
+                  <div
+                    style={{
+                      flexShrink: 0,
+                      padding: '16px',
+                      borderBottom:
+                        '1px solid #e5e7eb',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent:
+                        'space-between',
+                      gap: '10px',
+                    }}
+                  >
+                    <strong
+                      style={{
+                        fontSize: '17px',
+                        color: '#111827',
+                      }}
+                    >
+                      Notifications
+
+                      {unreadCount > 0 && (
+                        <span
+                          style={{
+                            display:
+                              'inline-flex',
+                            alignItems:
+                              'center',
+                            justifyContent:
+                              'center',
+                            marginLeft:
+                              '7px',
+                            minWidth:
+                              '21px',
+                            height:
+                              '21px',
+                            padding:
+                              '0 6px',
+                            borderRadius:
+                              '999px',
+                            background:
+                              '#dc2626',
+                            color:
+                              '#fff',
+                            fontSize:
+                              '11px',
+                            fontWeight:
+                              '700',
+                            boxSizing:
+                              'border-box',
+                          }}
+                        >
+                          {unreadCount >
+                          99
+                            ? '99+'
+                            : unreadCount}
+                        </span>
+                      )}
+                    </strong>
+
+                    {unreadCount > 0 && (
+                      <button
+                        type="button"
+                        onClick={
+                          markAllAsRead
+                        }
+                        style={{
+                          border:
+                            '1px solid #15803d',
+                          background:
+                            '#15803d',
+                          color:
+                            '#fff',
+                          borderRadius:
+                            '7px',
+                          padding:
+                            '7px 10px',
+                          cursor:
+                            'pointer',
+                          fontSize:
+                            '12px',
+                          fontWeight:
+                            '700',
+                          whiteSpace:
+                            'nowrap',
+                        }}
+                      >
+                        ✓ Mark all read
+                      </button>
+                    )}
+                  </div>
+
+                  {/* SCROLLABLE LIST */}
+                  <div
+                    style={{
+                      flex: '1 1 0',
+                      minHeight: 0,
+                      overflowY:
+                        'auto',
+                      overflowX:
+                        'hidden',
+                      WebkitOverflowScrolling:
+                        'touch',
+                      padding: '14px',
+                      boxSizing:
+                        'border-box',
+                    }}
+                  >
+                    {loading ? (
+                      <p
+                        style={{
+                          color:
+                            '#6b7280',
+                          fontSize:
+                            '14px',
+                        }}
+                      >
+                        Loading
+                        notifications...
+                      </p>
+                    ) : notifications.length ===
+                      0 ? (
+                      <div
+                        style={{
+                          padding:
+                            '40px 15px',
+                          textAlign:
+                            'center',
+                          color:
+                            '#6b7280',
+                        }}
+                      >
+                        <div
+                          style={{
+                            fontSize:
+                              '32px',
+                            marginBottom:
+                              '10px',
+                          }}
+                        >
+                          🔔
+                        </div>
+
+                        <div
+                          style={{
+                            fontWeight:
+                              '600',
+                            color:
+                              '#374151',
+                            marginBottom:
+                              '5px',
+                          }}
+                        >
+                          No notifications yet
+                        </div>
+
+                        <div
+                          style={{
+                            fontSize:
+                              '13px',
+                          }}
+                        >
+                          New updates will
+                          appear here.
+                        </div>
+                      </div>
+                    ) : (
+                      notifications.map(
+                        (notification) => (
+                          <div
+                            key={
+                              notification.id
+                            }
+                            onClick={() =>
+                              !notification.is_read &&
+                              markAsRead(
+                                notification.id
+                              )
+                            }
+                            style={{
+                              padding:
+                                '13px',
+                              marginBottom:
+                                '9px',
+                              borderRadius:
+                                '10px',
+                              background:
+                                notification.is_read
+                                  ? '#f9fafb'
+                                  : '#eff6ff',
+                              border:
+                                notification.is_read
+                                  ? '1px solid #e5e7eb'
+                                  : '1px solid #bfdbfe',
+                              cursor:
+                                notification.is_read
+                                  ? 'default'
+                                  : 'pointer',
+                            }}
+                          >
+                            <div
+                              style={{
+                                display:
+                                  'flex',
+                                alignItems:
+                                  'flex-start',
+                                justifyContent:
+                                  'space-between',
+                                gap: '8px',
+                              }}
+                            >
+                              <strong
+                                style={{
+                                  display:
+                                    'block',
+                                  fontSize:
+                                    '14px',
+                                  color:
+                                    '#111827',
+                                }}
+                              >
+                                {
+                                  notification.title
+                                }
+                              </strong>
+
+                              {!notification.is_read && (
+                                <span
+                                  style={{
+                                    flexShrink:
+                                      0,
+                                    width:
+                                      '8px',
+                                    height:
+                                      '8px',
+                                    marginTop:
+                                      '5px',
+                                    borderRadius:
+                                      '50%',
+                                    background:
+                                      '#2563eb',
+                                  }}
+                                />
+                              )}
+                            </div>
+
+                            <p
+                              style={{
+                                margin:
+                                  '6px 0',
+                                fontSize:
+                                  '14px',
+                                lineHeight:
+                                  '1.45',
+                                color:
+                                  '#374151',
+                              }}
+                            >
+                              {
+                                notification.message
+                              }
+                            </p>
+
+                            <div
+                              style={{
+                                display:
+                                  'flex',
+                                alignItems:
+                                  'center',
+                                justifyContent:
+                                  'space-between',
+                                gap:
+                                  '10px',
+                                flexWrap:
+                                  'wrap',
+                                marginTop:
+                                  '9px',
+                              }}
+                            >
+                              <small
+                                style={{
+                                  color:
+                                    '#6b7280',
+                                  fontSize:
+                                    '11px',
+                                }}
+                              >
+                                {formatDate(
+                                  notification.created_at
+                                )}
+                              </small>
+
+                              {!notification.is_read && (
+                                <button
+                                  type="button"
+                                  onClick={(
+                                    event
+                                  ) => {
+                                    event.stopPropagation()
+
+                                    markAsRead(
+                                      notification.id
+                                    )
+                                  }}
+                                  style={{
+                                    border:
+                                      '1px solid #15803d',
+                                    background:
+                                      '#fff',
+                                    color:
+                                      '#15803d',
+                                    borderRadius:
+                                      '7px',
+                                    padding:
+                                      '6px 9px',
+                                    cursor:
+                                      'pointer',
+                                    fontSize:
+                                      '11px',
+                                    fontWeight:
+                                      '700',
+                                  }}
+                                >
+                                  ✓ Mark as read
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        )
+                      )
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </>,
+          document.body
+        )
+      : null
+
   return (
     <div
       style={{
@@ -437,7 +1142,9 @@ function Notifications({ user }) {
       <button
         type="button"
         className="back-button"
-        onClick={() => setOpen((current) => !current)}
+        onClick={() =>
+          setOpen((current) => !current)
+        }
         style={{
           position: 'relative',
         }}
@@ -463,339 +1170,7 @@ function Notifications({ user }) {
         )}
       </button>
 
-      {open && (
-        <>
-          {/* BACKDROP */}
-          <div
-            onClick={() => setOpen(false)}
-            style={{
-              position: 'fixed',
-              inset: 0,
-              background: 'rgba(0,0,0,0.18)',
-              zIndex: 999,
-            }}
-          />
-
-          {/* CENTERED NOTIFICATION PANEL */}
-          <div
-            style={{
-              position: 'fixed',
-              left: '50%',
-              top: '50%',
-              transform: 'translate(-50%, -50%)',
-              width: 'min(380px, calc(100vw - 32px))',
-              maxHeight: '78vh',
-              overflowY: 'auto',
-              background: '#fff',
-              border: '1px solid #e5e7eb',
-              borderRadius: '16px',
-              boxShadow:
-                '0 18px 45px rgba(0,0,0,0.20)',
-              zIndex: 1000,
-              padding: '16px',
-              boxSizing: 'border-box',
-            }}
-          >
-            {/* PUSH NOTIFICATION SETTINGS */}
-            <div
-              style={{
-                marginBottom: '16px',
-                paddingBottom: '16px',
-                borderBottom:
-                  '1px solid #e5e7eb',
-              }}
-            >
-              <div
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  gap: '10px',
-                  marginBottom: '6px',
-                }}
-              >
-                <strong
-                  style={{
-                    fontSize: '16px',
-                  }}
-                >
-                  📱 App notifications
-                </strong>
-
-                <button
-                  type="button"
-                  onClick={() => setOpen(false)}
-                  style={{
-                    border: 'none',
-                    background: '#f3f4f6',
-                    color: '#374151',
-                    borderRadius: '999px',
-                    width: '32px',
-                    height: '32px',
-                    cursor: 'pointer',
-                    fontSize: '18px',
-                    lineHeight: '1',
-                  }}
-                  aria-label="Close notifications"
-                >
-                  ×
-                </button>
-              </div>
-
-              {pushEnabled ? (
-                <>
-                  <p
-                    style={{
-                      margin: '6px 0 10px',
-                      fontSize: '13px',
-                      color: '#16a34a',
-                      fontWeight: '600',
-                    }}
-                  >
-                    ✓ Push notifications enabled
-                    on this device
-                  </p>
-
-                  <button
-                    type="button"
-                    onClick={
-                      refreshPushSubscription
-                    }
-                    disabled={pushLoading}
-                    style={{
-                      display: 'block',
-                      width: '100%',
-                      marginTop: '8px',
-                      padding: '10px 12px',
-                      border:
-                        '1px solid #15803d',
-                      background: '#fff',
-                      color: '#15803d',
-                      borderRadius: '8px',
-                      cursor: pushLoading
-                        ? 'not-allowed'
-                        : 'pointer',
-                      fontSize: '13px',
-                      fontWeight: '700',
-                      textAlign: 'center',
-                    }}
-                  >
-                    {pushLoading
-                      ? 'Refreshing...'
-                      : '🔄 Refresh push notifications'}
-                  </button>
-                </>
-              ) : (
-                <>
-                  <p
-                    style={{
-                      margin: '6px 0 10px',
-                      fontSize: '13px',
-                      color: '#6b7280',
-                      lineHeight: '1.45',
-                    }}
-                  >
-                    Receive notifications even
-                    when the app is not open.
-                  </p>
-
-                  <button
-                    type="button"
-                    onClick={
-                      enablePushNotifications
-                    }
-                    disabled={pushLoading}
-                    style={{
-                      display: 'block',
-                      width: '100%',
-                      marginTop: '8px',
-                      padding: '10px 14px',
-                      border: 'none',
-                      background: '#15803d',
-                      color: '#fff',
-                      borderRadius: '8px',
-                      cursor: pushLoading
-                        ? 'not-allowed'
-                        : 'pointer',
-                      fontSize: '13px',
-                      fontWeight: '700',
-                      textAlign: 'center',
-                    }}
-                  >
-                    {pushLoading
-                      ? 'Enabling...'
-                      : '🔔 Enable app notifications'}
-                  </button>
-                </>
-              )}
-
-              {pushMessage && (
-                <p
-                  style={{
-                    margin: '9px 0 0',
-                    padding: '9px 10px',
-                    background: '#f9fafb',
-                    borderRadius: '8px',
-                    fontSize: '12px',
-                    color: '#374151',
-                    lineHeight: '1.4',
-                  }}
-                >
-                  {pushMessage}
-                </p>
-              )}
-            </div>
-
-            {/* NOTIFICATION HEADER */}
-            <div
-              style={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                gap: '10px',
-                marginBottom: '12px',
-              }}
-            >
-              <strong
-                style={{
-                  fontSize: '16px',
-                }}
-              >
-                Notifications
-              </strong>
-
-              {unreadCount > 0 && (
-                <button
-                  type="button"
-                  onClick={markAllAsRead}
-                  style={{
-                    border:
-                      '1px solid #15803d',
-                    background: '#15803d',
-                    color: '#fff',
-                    borderRadius: '7px',
-                    padding: '7px 10px',
-                    cursor: 'pointer',
-                    fontSize: '12px',
-                    fontWeight: '700',
-                    whiteSpace: 'nowrap',
-                  }}
-                >
-                  ✓ Mark all read
-                </button>
-              )}
-            </div>
-
-            {/* NOTIFICATIONS */}
-            {loading ? (
-              <p>Loading notifications...</p>
-            ) : notifications.length === 0 ? (
-              <p
-                style={{
-                  color: '#6b7280',
-                  fontSize: '14px',
-                }}
-              >
-                You don't have any notifications
-                yet.
-              </p>
-            ) : (
-              notifications.map((notification) => (
-                <div
-                  key={notification.id}
-                  onClick={() =>
-                    !notification.is_read &&
-                    markAsRead(notification.id)
-                  }
-                  style={{
-                    padding: '13px',
-                    marginBottom: '9px',
-                    borderRadius: '10px',
-                    background:
-                      notification.is_read
-                        ? '#f9fafb'
-                        : '#eff6ff',
-                    border:
-                      notification.is_read
-                        ? '1px solid #e5e7eb'
-                        : '1px solid #bfdbfe',
-                    cursor: notification.is_read
-                      ? 'default'
-                      : 'pointer',
-                  }}
-                >
-                  <strong
-                    style={{
-                      display: 'block',
-                      fontSize: '14px',
-                    }}
-                  >
-                    {notification.title}
-                  </strong>
-
-                  <p
-                    style={{
-                      margin: '6px 0',
-                      fontSize: '14px',
-                      lineHeight: '1.45',
-                    }}
-                  >
-                    {notification.message}
-                  </p>
-
-                  <div
-                    style={{
-                      marginTop: '9px',
-                      display: 'flex',
-                      justifyContent:
-                        'space-between',
-                      alignItems: 'center',
-                      gap: '10px',
-                      flexWrap: 'wrap',
-                    }}
-                  >
-                    <small
-                      style={{
-                        color: '#6b7280',
-                      }}
-                    >
-                      {formatDate(
-                        notification.created_at
-                      )}
-                    </small>
-
-                    {!notification.is_read && (
-                      <button
-                        type="button"
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          markAsRead(
-                            notification.id
-                          )
-                        }}
-                        style={{
-                          border:
-                            '1px solid #15803d',
-                          background: '#fff',
-                          color: '#15803d',
-                          borderRadius: '7px',
-                          padding: '7px 10px',
-                          fontSize: '12px',
-                          fontWeight: '700',
-                          cursor: 'pointer',
-                          whiteSpace: 'nowrap',
-                        }}
-                      >
-                        ✓ Mark as read
-                      </button>
-                    )}
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-        </>
-      )}
+      {notificationPanel}
     </div>
   )
 }

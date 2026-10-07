@@ -8,6 +8,10 @@ export default defineConfig({
     VitePWA({
       registerType: 'autoUpdate',
 
+      strategies: 'injectManifest',
+      srcDir: 'src',
+      filename: 'sw.js',
+
       manifest: {
         name: 'UniAbuja Market',
         short_name: 'UniAbuja Market',
@@ -27,23 +31,8 @@ export default defineConfig({
         ],
       },
 
-      workbox: {
-        runtimeCaching: [
-          {
-            urlPattern: /\/storage\/v1\/object\/public\/.*\.(?:png|jpg|jpeg|webp|gif|svg)$/i,
-            handler: 'CacheFirst',
-            options: {
-              cacheName: 'uniabuja-public-images',
-              expiration: {
-                maxEntries: 100,
-                maxAgeSeconds: 60 * 60 * 24 * 30,
-              },
-              cacheableResponse: {
-                statuses: [0, 200],
-              },
-            },
-          },
-        ],
+      injectManifest: {
+        globPatterns: ['**/*.{js,css,html,ico,png,svg,webp,jpg,jpeg}'],
       },
     }),
   ],
