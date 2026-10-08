@@ -18,7 +18,7 @@
     "SUPABASE_URL": "https://bkykccypicpnnqcmxmsm.supabase.co",
     "SUPABASE_PUBLISHABLE_KEY": "sb_publishable_RmwbDTWbdYS0gvw_idXp6g_FL_pvNy0",
     "LIVE_PAYOUTS_ENABLED": "true",
-    "PAYSTACK_VENDOR_PLAN_CODE": "PLN_hloako82wzsppo4"
+    "PAYSTACK_VENDOR_PLAN_CODE": "PLN_rn6esrf2i9am9n4"
   },
   "triggers": {
     "crons": [
