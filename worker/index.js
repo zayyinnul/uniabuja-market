@@ -35,21 +35,25 @@ async function supabaseRequest(
   path,
   options = {}
 ) {
+  const supabaseKey =
+    env.SUPABASE_SERVICE_ROLE_KEY ||
+    env.SUPABASE_SECRET_KEY ||
+    env.SUPABASE_PUBLISHABLE_KEY
+
+  const headers = {
+    apikey: supabaseKey,
+    ...options.headers,
+  }
+
+  if (!supabaseKey.startsWith('sb_secret_')) {
+    headers.Authorization = `Bearer ${supabaseKey}`
+  }
+
   return fetch(
     `${env.SUPABASE_URL}${path}`,
     {
       ...options,
-      headers: {
-        apikey:
-          env.SUPABASE_SERVICE_ROLE_KEY ||
-          env.SUPABASE_PUBLISHABLE_KEY,
-        Authorization:
-          `Bearer ${
-            env.SUPABASE_SERVICE_ROLE_KEY ||
-            env.SUPABASE_PUBLISHABLE_KEY
-          }`,
-        ...options.headers,
-      },
+      headers,
     }
   )
 }
@@ -3614,60 +3618,6 @@ export default {
         const paystackReference =
           paystackData.data
             .reference
-
-        const updateOrderResponse =
-          await supabaseRequest(
-            env,
-            `/rest/v1/orders?id=eq.${encodeURIComponent(
-              order_id
-            )}`,
-            {
-              method: 'PATCH',
-              headers: {
-                'Content-Type':
-                  'application/json',
-                Prefer:
-                  'return=minimal',
-              },
-              body: JSON.stringify({
-                payment_reference:
-                  paystackReference,
-                payment_status:
-                  'pending',
-                updated_at:
-                  new Date().toISOString(),
-              }),
-            }
-          )
-
-        console.log(
-          'PAYMENT UPDATE RESULT:',
-          updateOrderResponse.status,
-          await updateOrderResponse
-            .clone()
-            .text()
-        )
-
-        if (
-          !updateOrderResponse.ok
-        ) {
-          const updateError =
-            await updateOrderResponse.text()
-
-          console.error(
-            'Could not save Paystack reference:',
-            updateError
-          )
-
-          return jsonResponse(
-            {
-              success: false,
-              message:
-                'Payment was initialized but the order could not be updated.',
-            },
-            500
-          )
-        }
 
         return jsonResponse({
           success: true,

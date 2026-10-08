@@ -109,69 +109,6 @@ function Notifications({ user }) {
     setLoading(false)
   }
 
-  const checkPushSubscription = async () => {
-    if (
-      !('serviceWorker' in navigator) ||
-      !('PushManager' in window)
-    ) {
-      setPushEnabled(false)
-      return
-    }
-
-    try {
-      const registration =
-        await navigator.serviceWorker.ready
-
-      const subscription =
-        await registration.pushManager.getSubscription()
-
-      if (!subscription) {
-        setPushEnabled(false)
-        return
-      }
-
-      const p256dh =
-        subscription.getKey('p256dh')
-
-      const auth =
-        subscription.getKey('auth')
-
-      if (!p256dh || !auth) {
-        setPushEnabled(false)
-        return
-      }
-
-      const { data, error } = await supabase
-        .from('push_subscriptions')
-        .select('id')
-        .eq('user_id', user.id)
-        .eq(
-          'endpoint',
-          subscription.endpoint
-        )
-        .maybeSingle()
-
-      if (error) {
-        console.error(
-          'Push subscription database check error:',
-          error
-        )
-
-        setPushEnabled(false)
-        return
-      }
-
-      setPushEnabled(!!data)
-    } catch (error) {
-      console.error(
-        'Push subscription check error:',
-        error
-      )
-
-      setPushEnabled(false)
-    }
-  }
-
   const savePushSubscription = async (
     subscription
   ) => {
@@ -208,6 +145,70 @@ function Notifications({ user }) {
 
     if (error) {
       throw error
+    }
+  }
+
+  const checkPushSubscription = async () => {
+    if (
+      !('serviceWorker' in navigator) ||
+      !('PushManager' in window) ||
+      !('Notification' in window)
+    ) {
+      setPushEnabled(false)
+      return
+    }
+
+    try {
+      if (
+        Notification.permission !==
+        'granted'
+      ) {
+        setPushEnabled(false)
+        return
+      }
+
+      const registration =
+        await navigator.serviceWorker.ready
+
+      const subscription =
+        await registration.pushManager.getSubscription()
+
+      if (!subscription) {
+        setPushEnabled(false)
+        return
+      }
+
+      const p256dh =
+        subscription.getKey('p256dh')
+
+      const auth =
+        subscription.getKey('auth')
+
+      if (!p256dh || !auth) {
+        setPushEnabled(false)
+        return
+      }
+
+      /*
+       * Automatically synchronize the current
+       * browser/PWA push subscription with
+       * Supabase whenever the app starts.
+       *
+       * This does not create a new subscription
+       * or ask the user for permission.
+       */
+      await savePushSubscription(
+        subscription
+      )
+
+      setPushEnabled(true)
+    } catch (error) {
+      console.error(
+        'Push subscription check error:',
+        error
+      )
+
+      setPushEnabled(false)
     }
   }
 
@@ -260,7 +261,9 @@ function Notifications({ user }) {
           await registration.pushManager.subscribe({
             userVisibleOnly: true,
             applicationServerKey:
-              urlBase64ToUint8Array(publicKey),
+              urlBase64ToUint8Array(
+                publicKey
+              ),
           })
       }
 
@@ -522,9 +525,7 @@ function Notifications({ user }) {
                   pointerEvents: 'auto',
                 }}
               >
-                {/* ========================= */}
                 {/* LEFT SIDE: PUSH SETTINGS */}
-                {/* ========================= */}
 
                 <div
                   style={{
@@ -777,9 +778,7 @@ function Notifications({ user }) {
                   </div>
                 </div>
 
-                {/* ========================= */}
                 {/* RIGHT SIDE: NOTIFICATIONS */}
-                {/* ========================= */}
 
                 <div
                   style={{
@@ -1000,7 +999,8 @@ function Notifications({ user }) {
                                   'flex-start',
                                 justifyContent:
                                   'space-between',
-                                gap: '8px',
+                                gap:
+                                  '8px',
                               }}
                             >
                               <strong
@@ -1133,45 +1133,131 @@ function Notifications({ user }) {
       : null
 
   return (
-    <div
-      style={{
-        position: 'relative',
-        display: 'inline-block',
-      }}
-    >
-      <button
-        type="button"
-        className="back-button"
-        onClick={() =>
-          setOpen((current) => !current)
-        }
-        style={{
-          position: 'relative',
-        }}
-      >
-        🔔 Notifications
+    <>
+      <style>
+        {`
+          @media (max-width: 640px) {
+            .uni-notification-overlay {
+              align-items: flex-end !important;
+              padding: 0 !important;
+            }
 
-        {unreadCount > 0 && (
-          <span
-            style={{
-              marginLeft: '6px',
-              background: '#dc2626',
-              color: '#fff',
-              borderRadius: '999px',
-              padding: '2px 7px',
-              fontSize: '12px',
-              fontWeight: '700',
-            }}
-          >
-            {unreadCount > 99
-              ? '99+'
-              : unreadCount}
-          </span>
-        )}
-      </button>
+            .uni-notification-panel {
+              width: 100% !important;
+              height: auto !important;
+              max-height: 82vh !important;
+              min-height: 0 !important;
+              border-radius: 18px 18px 0 0 !important;
+              grid-template-columns: 1fr !important;
+              display: flex !important;
+              flex-direction: column !important;
+              box-shadow: 0 -8px 35px rgba(0,0,0,0.20) !important;
+            }
+
+            .uni-notification-settings {
+              border-right: none !important;
+              border-bottom: 1px solid #e5e7eb !important;
+              padding: 12px !important;
+              flex-shrink: 0 !important;
+              max-height: 230px !important;
+              overflow-y: auto !important;
+            }
+
+            .uni-notification-settings-header {
+              margin-bottom: 10px !important;
+            }
+
+            .uni-notification-settings-title {
+              font-size: 14px !important;
+            }
+
+            .uni-notification-settings-info {
+              padding: 9px !important;
+              font-size: 12px !important;
+            }
+
+            .uni-notification-settings-button {
+              min-height: 40px !important;
+              margin-top: 7px !important;
+              padding: 8px !important;
+              font-size: 12px !important;
+            }
+
+            .uni-notification-settings-description {
+              display: none !important;
+            }
+
+            .uni-notification-list {
+              min-height: 0 !important;
+              flex: 1 1 auto !important;
+            }
+
+            .uni-notification-header {
+              padding: 11px 12px !important;
+            }
+
+            .uni-notification-header-title {
+              font-size: 15px !important;
+            }
+
+            .uni-notification-list-scroll {
+              padding: 10px !important;
+              max-height: 45vh !important;
+            }
+
+            .uni-notification-card {
+              padding: 10px !important;
+              margin-bottom: 7px !important;
+            }
+
+            .uni-notification-message {
+              font-size: 13px !important;
+              margin: 5px 0 !important;
+            }
+          }
+        `}
+      </style>
 
       {notificationPanel}
-    </div>
+
+      <div
+        style={{
+          position: 'relative',
+          display: 'inline-block',
+        }}
+      >
+        <button
+          type="button"
+          className="back-button"
+          onClick={() =>
+            setOpen((current) => !current)
+          }
+          style={{
+            position: 'relative',
+          }}
+        >
+          🔔 Notifications
+
+          {unreadCount > 0 && (
+            <span
+              style={{
+                marginLeft: '6px',
+                background: '#dc2626',
+                color: '#fff',
+                borderRadius: '999px',
+                padding: '2px 7px',
+                fontSize: '12px',
+                fontWeight: '700',
+              }}
+            >
+              {unreadCount > 99
+                ? '99+'
+                : unreadCount}
+            </span>
+          )}
+        </button>
+      </div>
+    </>
   )
 }
 
