@@ -726,6 +726,12 @@ async function processVendorPayout(
     Math.round(
       payoutAmount * 100
     )
+    if (env.PAYOUTS_VERIFY_ONLY === 'true') {
+  console.log(
+    `Payout ${payout.id}: PAYOUTS_VERIFY_ONLY is enabled. No real transfer will be created.`
+  )
+  return
+}
 
   if (
     env.LIVE_PAYOUTS_ENABLED !==
@@ -803,6 +809,27 @@ async function processVendorPayout(
       `Paystack transfer request was not accepted for payout ${payout.id}:`,
       message
     )
+
+    // Paystack explicitly rejected this transfer because
+    // the available balance was insufficient.
+    // Stop the automatic retry loop; reconcile before retrying.
+    if (
+      message.toLowerCase().includes('balance is not enough')
+    ) {
+      await updateVendorPayout(
+        env,
+        payout.id,
+        {
+          status: 'failed',
+          failure_reason:
+            'Paystack rejected transfer: insufficient balance. Manual reconciliation required before retry.',
+        }
+      )
+
+      console.error(
+        `Payout ${payout.id} marked failed after Paystack rejected the transfer for insufficient balance.`
+      )
+    }
 
     return
   }
@@ -886,84 +913,376 @@ async function processVendorPayout(
 // AUTOMATED PAYOUT PROCESSOR
 // ---------------------------------------------------------
 
-async function processPendingVendorPayouts(
-  env
-) {
-  if (
-    env.AUTOMATED_PAYOUTS_ENABLED !==
-    'true'
-  ) {
-    console.log(
-      'Automated payouts disabled. No transfers will be created.'
-    )
+async function processPendingVendorPayouts(env) {
+  const verifyOnly = env.PAYOUTS_VERIFY_ONLY === 'true'
+  const automatedEnabled =
+    env.AUTOMATED_PAYOUTS_ENABLED === 'true'
+  const livePayoutsEnabled =
+    env.LIVE_PAYOUTS_ENABLED === 'true'
 
+  // Verification-only mode may inspect records, but must never
+  // claim payouts or create transfers.
+  if (!verifyOnly && (!automatedEnabled || !livePayoutsEnabled)) {
+    console.log(
+      'Automated payouts are disabled. No payouts will be claimed or transferred.'
+    )
     return
   }
 
-  const payoutsResponse =
-    await supabaseRequest(
-      env,
-      '/rest/v1/vendor_payouts?status=eq.processing&paystack_reference=not.is.null&select=id,vendor_id,payout_amount,paystack_reference,status&order=created_at.asc&limit=20',
+  // Never call Paystack's transfer workflow without a Live Mode key.
+  if (
+    !env.PAYSTACK_SECRET_KEY ||
+    !env.PAYSTACK_SECRET_KEY.startsWith('sk_live_')
+  ) {
+    console.error(
+      'Payout processing stopped: a Paystack Live Mode secret key is required.'
+    )
+    return
+  }
+
+  async function readRows(path) {
+    try {
+      const response = await supabaseRequest(
+        env,
+        path,
+        { method: 'GET' }
+      )
+
+      const responseText = await response.text()
+
+      let data
+
+      try {
+        data = JSON.parse(responseText)
+      } catch {
+        data = null
+      }
+
+      if (!response.ok || !Array.isArray(data)) {
+        console.error(
+          'Could not retrieve payout verification data:',
+          response.status,
+          responseText
+        )
+        return null
+      }
+
+      return data
+    } catch (error) {
+      console.error(
+        'Payout verification request failed:',
+        error?.name,
+        error?.message,
+        error?.stack
+      )
+      return null
+    }
+  }
+
+  async function verifyOriginalPayment(payoutId) {
+  const payouts = await readRows(
+    `/rest/v1/vendor_payouts?id=eq.${encodeURIComponent(
+      payoutId
+    )}&select=id,vendor_commission_id,payout_amount,status&limit=1`
+  )
+
+  if (!payouts?.length) {
+    console.error(`Payout ${payoutId}: payout record not found.`)
+    return false
+  }
+
+  const payout = payouts[0]
+
+  if (!payout.vendor_commission_id) {
+    console.error(`Payout ${payoutId}: commission relationship missing.`)
+    return false
+  }
+
+  const commissions = await readRows(
+    `/rest/v1/vendor_commissions?id=eq.${encodeURIComponent(
+      payout.vendor_commission_id
+    )}&select=vendor_order_id,payout_method&limit=1`
+  )
+
+  if (!commissions?.length || !commissions[0].vendor_order_id) {
+    console.error(`Payout ${payoutId}: commission could not be verified.`)
+    return false
+  }
+
+  // Split payments already allocate the vendor's share through Paystack.
+  // Never issue a separate transfer for these commissions.
+  if (commissions[0].payout_method === 'split') {
+    console.log(
+      `Payout ${payoutId}: commission uses Paystack Split Payments. Separate transfer prohibited.`
+    )
+    return false
+  }
+
+  const vendorOrders = await readRows(
+    `/rest/v1/vendor_orders?id=eq.${encodeURIComponent(
+      commissions[0].vendor_order_id
+    )}&select=order_id&limit=1`
+  )
+
+  if (!vendorOrders?.length || !vendorOrders[0].order_id) {
+    console.error(`Payout ${payoutId}: vendor order could not be verified.`)
+    return false
+  }
+
+  const orders = await readRows(
+    `/rest/v1/orders?id=eq.${encodeURIComponent(
+      vendorOrders[0].order_id
+    )}&select=id,total_amount,payment_reference,payment_status&limit=1`
+  )
+
+  if (!orders?.length) {
+    console.error(`Payout ${payoutId}: parent order not found.`)
+    return false
+  }
+
+  const order = orders[0]
+
+  if (
+    order.payment_status !== 'paid' ||
+    !order.payment_reference
+  ) {
+    console.log(`Payout ${payoutId}: order is not confirmed as paid.`)
+    return false
+  }
+
+  let response
+  let result
+
+  try {
+    response = await fetch(
+      `https://api.paystack.co/transaction/verify/${encodeURIComponent(
+        order.payment_reference
+      )}`,
       {
         method: 'GET',
+        headers: {
+          Authorization: `Bearer ${env.PAYSTACK_SECRET_KEY}`,
+        },
       }
     )
 
-  let payoutsData = null
-
-  try {
-    payoutsData =
-      await payoutsResponse.json()
-  } catch {
+    result = await response.json()
+  } catch (error) {
     console.error(
-      'Could not parse processing payouts response.'
+      `Payout ${payoutId}: Paystack verification request failed.`,
+      error
     )
-
-    return
+    return false
   }
 
-  if (
-    !payoutsResponse.ok
-  ) {
-    console.error(
-      'Could not load processing payouts:',
-      payoutsData
-    )
+  const expectedAmount = Math.round(Number(order.total_amount) * 100)
 
-    return
+  // First establish that Paystack returned a successful verification response.
+  // A failed API response must not be misclassified as a test payment.
+  if (!response.ok || result?.status !== true) {
+    console.error(
+      `Payout ${payoutId}: Paystack verification unavailable or unsuccessful (HTTP ${response.status}): ${result?.message || 'No message returned'}. Payment remains unverified.`
+    )
+    return false
   }
 
-  if (
-    !Array.isArray(
-      payoutsData
-    ) ||
-    !payoutsData.length
-  ) {
-    console.log(
-      'No processing vendor payouts found.'
-    )
+  const transaction = result?.data
 
-    return
+if (!transaction) {
+  console.error(
+    `Payout ${payoutId}: Paystack returned no transaction data. Payment remains unverified.`
+  )
+  return false
+}
+
+const payoutVerifiedSubaccount =
+  typeof transaction.subaccount === 'string'
+    ? transaction.subaccount
+    : transaction.subaccount?.subaccount_code
+
+if (payoutVerifiedSubaccount) {
+  console.error(
+    `Payout ${payoutId}: Paystack confirms a subaccount transaction. Separate vendor transfer prohibited.`
+  )
+
+  return false
+}
+  // Fail closed if Paystack confirms this transaction used a subaccount.
+// Paystack split settlement already handles the vendor's share, so
+// a separate vendor transfer must not be initiated.
+const verifiedSubaccount =
+  typeof transaction.subaccount === 'string'
+    ? transaction.subaccount
+    : transaction.subaccount?.subaccount_code
+
+if (verifiedSubaccount) {
+  console.error(
+    `Payout ${payoutId}: Paystack confirms a subaccount transaction. Separate vendor transfer prohibited.`
+  )
+  return false
+}
+
+  // Explicitly distinguish a confirmed test transaction from an unknown mode.
+  if (transaction.domain === 'test') {
+    console.error(
+      `Payout ${payoutId}: original payment is confirmed as Test Mode. No payout permitted.`
+    )
+    return false
+  }
+
+  if (transaction.domain !== 'live') {
+    console.error(
+      `Payout ${payoutId}: transaction domain is not confirmed as Live Mode. No payout permitted.`
+    )
+    return false
+  }
+
+  // Validate the original customer payment before allowing payout processing.
+  if (
+    transaction.status !== 'success' ||
+    transaction.reference !== order.payment_reference ||
+    transaction.currency !== 'NGN' ||
+    !Number.isFinite(expectedAmount) ||
+    expectedAmount <= 0 ||
+    Number(transaction.amount) !== expectedAmount
+  ) {
+    console.error(
+      `Payout ${payoutId}: original payment failed status, reference, currency, or amount verification.`
+    )
+    return false
   }
 
   console.log(
-    `Found ${payoutsData.length} processing vendor payout(s).`
+    `Payout ${payoutId}: original customer payment verified.`
   )
 
-  for (
-    const payout of
-      payoutsData
-  ) {
+  return true
+}
+
+  // Load pending payouts without changing their status.
+  const pendingPayouts = await readRows(
+    '/rest/v1/vendor_payouts?status=eq.pending&select=id&order=created_at.asc&limit=2'
+  )
+
+  if (!pendingPayouts) {
+    console.error('Could not load pending vendor payouts.')
+    return
+  }
+
+  // Verification-only mode ends here: no claims and no transfers.
+  if (verifyOnly) {
+    const processingPayouts = await readRows(
+      '/rest/v1/vendor_payouts?status=eq.processing&select=id&order=created_at.asc&limit=2'
+    )
+
+    if (!processingPayouts) {
+      console.error('Could not load processing vendor payouts.')
+      return
+    }
+
+    for (const payout of [
+      ...pendingPayouts,
+      ...processingPayouts,
+    ]) {
+      try {
+        const verified = await verifyOriginalPayment(payout.id)
+
+        console.log(
+          `Verification-only result for payout ${payout.id}: ${
+            verified ? 'PAYMENT VERIFIED' : 'NOT VERIFIED'
+          }`
+        )
+      } catch (error) {
+        console.error(
+          `Verification-only check failed for payout ${payout.id}:`,
+          error
+        )
+      }
+    }
+
+    console.log(
+      'Verification-only run finished. No payouts were claimed or transferred.'
+    )
+    return
+  }
+
+  // Normal mode: verify each original customer payment before claiming.
+  for (const payout of pendingPayouts) {
     try {
-      await processVendorPayout(
+      const paymentVerified =
+        await verifyOriginalPayment(payout.id)
+
+      if (!paymentVerified) {
+        continue
+      }
+
+      const claimResponse = await supabaseRequest(
         env,
-        payout
+        '/rest/v1/rpc/claim_vendor_payout',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            p_payout_id: payout.id,
+          }),
+        }
       )
+
+      let claimData
+
+      try {
+        claimData = await claimResponse.json()
+      } catch {
+        console.error(
+          `Payout ${payout.id}: could not parse claim response.`
+        )
+        continue
+      }
+
+      if (
+        !claimResponse.ok ||
+        !Array.isArray(claimData) ||
+        !claimData.length ||
+        !claimData[0].payout_id ||
+        !claimData[0].paystack_reference
+      ) {
+        console.log(`Payout ${payout.id} was not claimed.`, claimData)
+        continue
+      }
+
+      console.log(`Claimed verified payout ${payout.id}.`)
     } catch (error) {
-      console.error(
-        `Error processing payout ${payout.id}:`,
-        error
-      )
+      console.error(`Error claiming payout ${payout.id}:`, error)
+    }
+  }
+
+  // Re-fetch processing payouts after claims.
+  const processingPayouts = await readRows(
+    '/rest/v1/vendor_payouts?status=eq.processing&paystack_reference=not.is.null&select=id,vendor_id,payout_amount,paystack_reference,status&order=created_at.asc&limit=20'
+  )
+
+  if (!processingPayouts) {
+    console.error('Could not load processing vendor payouts.')
+    return
+  }
+
+  for (const payout of processingPayouts) {
+    try {
+      const paymentVerified =
+        await verifyOriginalPayment(payout.id)
+
+      if (!paymentVerified) {
+        console.log(
+          `Payout ${payout.id} remains unchanged because its original payment could not be verified.`
+        )
+        continue
+      }
+
+      await processVendorPayout(env, payout)
+    } catch (error) {
+      console.error(`Error processing payout ${payout.id}:`, error)
     }
   }
 }
@@ -1088,6 +1407,70 @@ async function findVendorSubscriptionByVendorId(
     data.length
     ? data[0]
     : null
+}
+async function processVendorSubscriptionPayment(
+  env,
+  payment
+) {
+  const response = await supabaseRequest(
+    env,
+    '/rest/v1/rpc/process_vendor_subscription_payment',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        p_subscription_id: payment.subscriptionId,
+        p_vendor_id: payment.vendorId,
+        p_paystack_reference: payment.reference,
+        p_amount_kobo: payment.amountKobo,
+        p_currency: payment.currency,
+        p_paid_at: payment.paidAt,
+        p_period_start: payment.periodStart,
+        p_period_end: payment.periodEnd,
+        p_customer_code: payment.customerCode || null,
+        p_subscription_code: payment.subscriptionCode || null,
+      }),
+    }
+  )
+
+  let result = null
+
+  try {
+    result = await response.json()
+  } catch {
+    result = null
+  }
+
+  if (!response.ok) {
+    console.error(
+      'Vendor subscription payment processing failed:',
+      response.status,
+      result
+    )
+
+    throw new Error(
+      'Could not process vendor subscription payment'
+    )
+  }
+
+  if (
+    !result ||
+    result.success !== true ||
+    typeof result.already_processed !== 'boolean'
+  ) {
+    console.error(
+      'Unexpected vendor subscription payment RPC response:',
+      result
+    )
+
+    throw new Error(
+      'Invalid vendor subscription payment processing response'
+    )
+  }
+
+  return result
 }
 
 async function updateVendorSubscription(
@@ -2381,8 +2764,27 @@ export default {
             })
           }
 
-          const order =
+                    const order =
             orders[0]
+
+          // Confirm the webhook transaction matches this order's payment.
+          if (
+            transaction?.status !== 'success' ||
+            transaction?.reference !== order.payment_reference ||
+            transaction?.currency !== 'NGN'
+          ) {
+            console.error(
+              `Customer order ${order.id}: Paystack transaction status, reference, or currency is invalid.`
+            )
+
+            return jsonResponse(
+              {
+                success: false,
+                message: 'Payment verification failed',
+              },
+              400
+            )
+          }
 
           const paidAmount =
             Number(
@@ -2415,6 +2817,242 @@ export default {
               },
               400
             )
+          }
+          // Identify the vendor order for this payment.
+const vendorOrderResponse =
+  await supabaseRequest(
+    env,
+    `/rest/v1/vendor_orders?order_id=eq.${encodeURIComponent(
+      order.id
+    )}&select=id,vendor_id,subtotal&limit=2`,
+    {
+      method: 'GET',
+    }
+  )
+
+let paidVendorOrders = null
+
+try {
+  paidVendorOrders =
+    await vendorOrderResponse.json()
+} catch {
+  paidVendorOrders = null
+}
+
+          if (
+            !vendorOrderResponse.ok ||
+            !Array.isArray(paidVendorOrders) ||
+            paidVendorOrders.length !== 1
+          ) {
+            console.error(
+              `Could not identify the vendor order for paid order ${order.id}.`
+            )
+
+            return jsonResponse(
+              {
+                success: false,
+                message:
+                  'Could not identify the vendor commission',
+              },
+              500
+            )
+          }
+
+                    // Verify the transaction directly with Paystack before
+          // deciding whether this commission was actually split.
+          const splitVerifyResponse = await fetch(
+            `https://api.paystack.co/transaction/verify/${encodeURIComponent(
+              reference
+            )}`,
+            {
+              method: 'GET',
+              headers: {
+                Authorization: `Bearer ${env.PAYSTACK_SECRET_KEY}`,
+              },
+            }
+          )
+
+          let splitVerifyData = null
+
+          try {
+            splitVerifyData = await splitVerifyResponse.json()
+          } catch {
+            splitVerifyData = null
+          }
+
+          const verifiedTransaction = splitVerifyData?.data
+
+          if (
+            !splitVerifyResponse.ok ||
+            !splitVerifyData?.status ||
+            verifiedTransaction?.status !== 'success' ||
+            verifiedTransaction?.reference !== reference ||
+            verifiedTransaction?.currency !== 'NGN' ||
+            Number(verifiedTransaction?.amount) !== expectedAmount
+          ) {
+            console.error(
+              `Could not independently verify payment ${reference} before classifying its commission.`
+            )
+
+            return jsonResponse(
+              {
+                success: false,
+                message: 'Could not verify payment settlement',
+              },
+              500
+            )
+          }
+
+          // An ordinary transaction has no subaccount split.
+          // Leave its commission payout_method as "transfer".
+          const verifiedSubaccount =
+            typeof verifiedTransaction.subaccount === 'string'
+              ? verifiedTransaction.subaccount
+              : verifiedTransaction.subaccount?.subaccount_code
+              if (!verifiedSubaccount) {
+  console.error(
+    `Payment ${reference}: Paystack did not confirm the vendor subaccount. Refusing to mark this order paid.`
+  )
+
+  return jsonResponse(
+    {
+      success: false,
+      message: 'Vendor split settlement could not be verified',
+    },
+    500
+  )
+}
+
+          if (verifiedSubaccount) {
+            const vendorOrder = paidVendorOrders[0]
+
+            const mappingResponse = await supabaseRequest(
+              env,
+              `/rest/v1/vendor_paystack_subaccounts?vendor_id=eq.${encodeURIComponent(
+                vendorOrder.vendor_id
+              )}&select=subaccount_code&limit=2`,
+              {
+                method: 'GET',
+              }
+            )
+
+            let mappings = null
+
+            try {
+              mappings = await mappingResponse.json()
+            } catch {
+              mappings = null
+            }
+
+            if (
+              !mappingResponse.ok ||
+              !Array.isArray(mappings) ||
+              mappings.length !== 1 ||
+              !mappings[0]?.subaccount_code
+            ) {
+              console.error(
+                `Could not confirm the vendor subaccount for order ${order.id}.`
+              )
+
+              return jsonResponse(
+                {
+                  success: false,
+                  message: 'Could not confirm split destination',
+                },
+                500
+              )
+            }
+
+            const expectedCommission =
+              Math.round(Number(vendorOrder.subtotal) * 10) / 100
+
+            const expectedTransactionCharge =
+              Math.round(expectedCommission * 100)
+
+            if (
+  verifiedSubaccount !== mappings[0].subaccount_code
+) {
+  console.error(
+    `Split subaccount does not match the expected vendor for order ${order.id}.`
+  )
+
+  return jsonResponse(
+    {
+      success: false,
+      message: 'Split settlement subaccount does not match',
+    },
+    500
+  )
+}
+
+            const commissionResponse = await supabaseRequest(
+              env,
+              `/rest/v1/vendor_commissions?vendor_order_id=eq.${encodeURIComponent(
+                vendorOrder.id
+              )}&select=id&limit=2`,
+              {
+                method: 'GET',
+              }
+            )
+
+            let commissions = null
+
+            try {
+              commissions = await commissionResponse.json()
+            } catch {
+              commissions = null
+            }
+
+            if (
+              !commissionResponse.ok ||
+              !Array.isArray(commissions) ||
+              commissions.length !== 1
+            ) {
+              console.error(
+                `Could not identify the commission for order ${order.id}.`
+              )
+
+              return jsonResponse(
+                {
+                  success: false,
+                  message: 'Could not identify vendor commission',
+                },
+                500
+              )
+            }
+
+            const markSplitResponse = await supabaseRequest(
+              env,
+              `/rest/v1/vendor_commissions?id=eq.${encodeURIComponent(
+                commissions[0].id
+              )}`,
+              {
+                method: 'PATCH',
+                headers: {
+                  'Content-Type': 'application/json',
+                  Prefer: 'return=minimal',
+                },
+                body: JSON.stringify({
+                  payout_method: 'split',
+                  updated_at: new Date().toISOString(),
+                }),
+              }
+            )
+
+            if (!markSplitResponse.ok) {
+              console.error(
+                `Could not mark confirmed split commission for order ${order.id}:`,
+                await markSplitResponse.text()
+              )
+
+              return jsonResponse(
+                {
+                  success: false,
+                  message: 'Could not record confirmed split settlement',
+                },
+                500
+              )
+            }
           }
 
           if (
@@ -3564,6 +4202,209 @@ export default {
             400
           )
         }
+        // PREPARE PAYSTACK SPLIT PAYMENT
+
+        // 1. Find the vendor order.
+        const vendorOrderResponse = await supabaseRequest(
+          env,
+          `/rest/v1/vendor_orders?select=id,vendor_id,subtotal&order_id=eq.${encodeURIComponent(order_id)}&limit=2`
+        )
+
+        let vendorOrders = null
+
+        try {
+          vendorOrders = await vendorOrderResponse.json()
+        } catch {
+          vendorOrders = null
+        }
+
+        if (
+          !vendorOrderResponse.ok ||
+          !Array.isArray(vendorOrders) ||
+          vendorOrders.length !== 1
+        ) {
+          return jsonResponse({
+            success: false,
+            message: 'Could not identify the vendor for this order',
+          }, 400)
+        }
+
+        const vendorOrder = vendorOrders[0]
+        const vendorId = vendorOrder.vendor_id
+        const productSubtotal = Number(vendorOrder.subtotal)
+
+        if (
+          !Number.isFinite(productSubtotal) ||
+          productSubtotal <= 0
+        ) {
+          return jsonResponse({
+            success: false,
+            message: 'Invalid vendor order subtotal',
+          }, 400)
+        }
+
+        // 2. Find the vendor's verified, active bank account.
+        const accountResponse = await supabaseRequest(
+          env,
+          `/rest/v1/vendor_payout_accounts?select=id,vendor_id,account_name,bank_code,bank_name,account_number,is_verified,is_active&vendor_id=eq.${encodeURIComponent(vendorId)}&limit=1`
+        )
+
+        let accounts = null
+
+        try {
+          accounts = await accountResponse.json()
+        } catch {
+          accounts = null
+        }
+
+        if (
+          !accountResponse.ok ||
+          !Array.isArray(accounts) ||
+          accounts.length !== 1 ||
+          accounts[0].is_verified !== true ||
+          accounts[0].is_active !== true
+        ) {
+          return jsonResponse({
+            success: false,
+            message: 'The vendor must have a verified, active payout account before checkout can proceed',
+          }, 400)
+        }
+
+        const payoutAccount = accounts[0]
+
+        // 3. Look for an existing Paystack subaccount.
+        const subaccountResponse = await supabaseRequest(
+          env,
+          `/rest/v1/vendor_paystack_subaccounts?select=payout_account_id,subaccount_code&vendor_id=eq.${encodeURIComponent(vendorId)}&limit=1`
+        )
+
+        let subaccounts = null
+
+        try {
+          subaccounts = await subaccountResponse.json()
+        } catch {
+          subaccounts = null
+        }
+
+        if (
+          !subaccountResponse.ok ||
+          !Array.isArray(subaccounts)
+        ) {
+          return jsonResponse({
+            success: false,
+            message: 'Could not retrieve the vendor Paystack subaccount',
+          }, 500)
+        }
+
+        let subaccountCode = null
+
+        if (subaccounts.length > 0) {
+          const existingSubaccount = subaccounts[0]
+
+          // Never pay an outdated bank account silently.
+          if (
+            existingSubaccount.payout_account_id !== payoutAccount.id
+          ) {
+            return jsonResponse({
+              success: false,
+              message: 'The vendor payout account has changed. The Paystack subaccount must be updated before accepting payments.',
+            }, 400)
+          }
+
+          subaccountCode = existingSubaccount.subaccount_code
+        } else {
+          // 4. Create the Paystack subaccount.
+          const createSubaccountResponse = await fetch(
+            'https://api.paystack.co/subaccount',
+            {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${env.PAYSTACK_SECRET_KEY}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                business_name: `UniAbuja Market - ${payoutAccount.account_name}`,
+                settlement_bank: payoutAccount.bank_code,
+                account_number: payoutAccount.account_number,
+                percentage_charge: 0,
+                description: 'UniAbuja Market vendor settlement',
+              }),
+            }
+          )
+
+          let createdSubaccount = null
+
+          try {
+            createdSubaccount = await createSubaccountResponse.json()
+          } catch {
+            createdSubaccount = null
+          }
+
+          if (
+            !createSubaccountResponse.ok ||
+            !createdSubaccount?.status ||
+            !createdSubaccount.data?.subaccount_code
+          ) {
+            console.error(
+              'Paystack subaccount creation failed:',
+              createdSubaccount?.message
+            )
+
+            return jsonResponse({
+              success: false,
+              message: 'Could not set up the vendor Paystack subaccount',
+            }, 400)
+          }
+
+          subaccountCode = createdSubaccount.data.subaccount_code
+
+          // 5. Save the subaccount mapping.
+          const saveSubaccountResponse = await supabaseRequest(
+            env,
+            '/rest/v1/vendor_paystack_subaccounts',
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Prefer: 'return=minimal',
+              },
+              body: JSON.stringify({
+                vendor_id: vendorId,
+                payout_account_id: payoutAccount.id,
+                subaccount_code: subaccountCode,
+              }),
+            }
+          )
+
+          if (!saveSubaccountResponse.ok) {
+            console.error(
+              'Could not save vendor subaccount mapping:',
+              await saveSubaccountResponse.text()
+            )
+
+            return jsonResponse({
+              success: false,
+              message: 'Could not save the vendor Paystack subaccount. Please retry.',
+            }, 500)
+          }
+        }
+
+        // 6. Calculate the platform's 10% commission.
+        const commissionAmount =
+          Math.round(productSubtotal * 10) / 100
+
+        const transactionCharge =
+          Math.round(commissionAmount * 100)
+
+        if (
+          transactionCharge <= 0 ||
+          transactionCharge >= amountInKobo
+        ) {
+          return jsonResponse({
+            success: false,
+            message: 'Invalid platform commission for this order',
+          }, 400)
+        }
 
         const paystackResponse =
           await fetch(
@@ -3577,19 +4418,24 @@ export default {
                   'application/json',
               },
               body: JSON.stringify({
-                email:
-                  paymentInfo.customer_email,
-                amount:
-                  amountInKobo,
-                reference:
-                  internalReference,
-                currency: 'NGN',
-                callback_url:
-                  `${getAppUrl(
-                    env,
-                    request
-                  )}/payment/callback`,
-              }),
+  email: paymentInfo.customer_email,
+  amount: amountInKobo,
+  reference: internalReference,
+  currency: 'NGN',
+
+  // Vendor receives the remainder.
+  subaccount: subaccountCode,
+
+  // Platform receives 10% of the product subtotal.
+  // Paystack expects this value in kobo.
+  transaction_charge: transactionCharge,
+
+  // Platform bears Paystack transaction fees.
+  bearer: 'subaccount',
+
+  callback_url:
+    `${getAppUrl(env, request)}/payment/callback`,
+}),
             }
           )
 
@@ -4023,6 +4869,42 @@ export default {
 
         const transaction =
           verifyData.data
+          if (
+  transaction.reference !== reference ||
+  transaction.currency !== 'NGN' ||
+  transaction.status !== 'success'
+) {
+  console.error(
+    'Vendor subscription callback: Paystack reference, currency, or status validation failed.'
+  )
+
+  return Response.redirect(
+    `${getAppUrl(
+      env,
+      request
+    )}/?subscription=error`,
+    303
+  )
+}
+
+        if (
+          transaction?.reference !== reference ||
+          transaction?.currency !== 'NGN'
+        ) {
+          console.error(
+            'Vendor subscription callback reference or currency mismatch.'
+          )
+
+          return Response.redirect(
+            `${getAppUrl(
+              env,
+              request
+            )}/?subscription=failed&reference=${encodeURIComponent(
+              reference
+            )}`,
+            303
+          )
+        }
 
         const metadata =
           transaction.metadata ||
@@ -4121,6 +5003,28 @@ export default {
           )
         }
 
+        // Prevent a repeated callback from resetting an
+        // already-active subscription period.
+        if (
+          subscription.status === 'active' &&
+          subscription.current_period_end &&
+          new Date(
+            subscription.current_period_end
+          ).getTime() > Date.now()
+        ) {
+          console.log(
+            `Vendor subscription ${subscription.id} is already active. Duplicate activation skipped.`
+          )
+
+          return Response.redirect(
+            `${getAppUrl(
+              env,
+              request
+            )}/?subscription=success`,
+            303
+          )
+        }
+
         const periodStart =
           normalizePaystackDate(
             transaction.paid_at
@@ -4135,28 +5039,33 @@ export default {
             30
           ).toISOString()
 
-        await updateVendorSubscription(
-          env,
-          subscription.id,
-          {
-            status: 'active',
-            current_period_start:
-              periodStart,
-            current_period_end:
-              periodEnd,
-            grace_period_ends_at:
-              null,
-            paystack_customer_code:
-              transaction.customer
-                ?.customer_code ||
-              subscription.paystack_customer_code ||
-              null,
-          }
-        )
+        const paymentResult =
+  await processVendorSubscriptionPayment(
+    env,
+    {
+      subscriptionId: subscription.id,
+      vendorId: vendorId,
+      reference: reference,
+      amountKobo: paidAmount,
+      currency: transaction.currency,
+      paidAt:
+        normalizePaystackDate(
+          transaction.paid_at
+        ) || periodStart,
+      periodStart: periodStart,
+      periodEnd: periodEnd,
+      customerCode:
+        transaction.customer?.customer_code ||
+        null,
+      subscriptionCode:
+        transaction.subscription?.subscription_code ||
+        null,
+    }
+  )
 
-        console.log(
-          `Vendor subscription ${subscription.id} activated from verified payment callback.`
-        )
+console.log(
+  `Vendor subscription ${subscription.id} callback processed. Already processed: ${paymentResult.already_processed}.`
+)
 
         return Response.redirect(
           `${getAppUrl(
@@ -4241,8 +5150,27 @@ export default {
           )
         }
 
-        const transaction =
+                const transaction =
           verifyData.data
+
+        if (
+          transaction?.reference !== reference ||
+          transaction?.currency !== 'NGN'
+        ) {
+          console.error(
+            'Customer payment callback reference or currency mismatch.'
+          )
+
+          return Response.redirect(
+            `${getAppUrl(
+              env,
+              request
+            )}/?payment=failed&reference=${encodeURIComponent(
+              reference
+            )}`,
+            303
+          )
+        }
 
         const orderResponse =
           await supabaseRequest(
@@ -4317,6 +5245,148 @@ export default {
             )}/?payment=error&order_id=${encodeURIComponent(
               order.id
             )}`,
+            303
+          )
+        }
+                // Identify the vendor order before allowing the order to be marked paid.
+        const callbackVendorOrderResponse = await supabaseRequest(
+          env,
+          `/rest/v1/vendor_orders?order_id=eq.${encodeURIComponent(
+            order.id
+          )}&select=id,vendor_id,subtotal&limit=2`,
+          { method: 'GET' }
+        )
+
+        let callbackVendorOrders = null
+
+        try {
+          callbackVendorOrders = await callbackVendorOrderResponse.json()
+        } catch {
+          callbackVendorOrders = null
+        }
+
+        if (
+          !callbackVendorOrderResponse.ok ||
+          !Array.isArray(callbackVendorOrders) ||
+          callbackVendorOrders.length !== 1
+        ) {
+          console.error(
+            `Could not identify vendor order for callback payment ${order.id}.`
+          )
+
+          return Response.redirect(
+            `${getAppUrl(env, request)}/?payment=processing&order_id=${encodeURIComponent(order.id)}`,
+            303
+          )
+        }
+
+        const callbackVerifiedSubaccount =
+          typeof transaction.subaccount === 'string'
+            ? transaction.subaccount
+            : transaction.subaccount?.subaccount_code
+
+        if (!callbackVerifiedSubaccount) {
+          console.error(
+            `Payment ${reference} has no verified Paystack subaccount. Do not release a vendor payout until settlement is reconciled.`
+          )
+
+          return Response.redirect(
+            `${getAppUrl(env, request)}/?payment=processing&order_id=${encodeURIComponent(order.id)}`,
+            303
+          )
+        }
+
+        const callbackVendorOrder = callbackVendorOrders[0]
+
+        const callbackMappingResponse = await supabaseRequest(
+          env,
+          `/rest/v1/vendor_paystack_subaccounts?vendor_id=eq.${encodeURIComponent(
+            callbackVendorOrder.vendor_id
+          )}&select=subaccount_code&limit=2`,
+          { method: 'GET' }
+        )
+
+        let callbackMappings = null
+
+        try {
+          callbackMappings = await callbackMappingResponse.json()
+        } catch {
+          callbackMappings = null
+        }
+
+        if (
+          !callbackMappingResponse.ok ||
+          !Array.isArray(callbackMappings) ||
+          callbackMappings.length !== 1 ||
+          callbackMappings[0]?.subaccount_code !== callbackVerifiedSubaccount
+        ) {
+          console.error(
+            `Paystack subaccount mismatch for callback payment ${reference}.`
+          )
+
+          return Response.redirect(
+            `${getAppUrl(env, request)}/?payment=processing&order_id=${encodeURIComponent(order.id)}`,
+            303
+          )
+        }
+
+        const callbackCommissionResponse = await supabaseRequest(
+          env,
+          `/rest/v1/vendor_commissions?vendor_order_id=eq.${encodeURIComponent(
+            callbackVendorOrder.id
+          )}&select=id&limit=2`,
+          { method: 'GET' }
+        )
+
+        let callbackCommissions = null
+
+        try {
+          callbackCommissions = await callbackCommissionResponse.json()
+        } catch {
+          callbackCommissions = null
+        }
+
+        if (
+          !callbackCommissionResponse.ok ||
+          !Array.isArray(callbackCommissions) ||
+          callbackCommissions.length !== 1
+        ) {
+          console.error(
+            `Could not identify commission for callback payment ${reference}.`
+          )
+
+          return Response.redirect(
+            `${getAppUrl(env, request)}/?payment=processing&order_id=${encodeURIComponent(order.id)}`,
+            303
+          )
+        }
+
+        const callbackMarkSplitResponse = await supabaseRequest(
+          env,
+          `/rest/v1/vendor_commissions?id=eq.${encodeURIComponent(
+            callbackCommissions[0].id
+          )}`,
+          {
+            method: 'PATCH',
+            headers: {
+              'Content-Type': 'application/json',
+              Prefer: 'return=minimal',
+            },
+            body: JSON.stringify({
+              payout_method: 'split',
+              updated_at: new Date().toISOString(),
+            }),
+          }
+        )
+
+        if (!callbackMarkSplitResponse.ok) {
+          console.error(
+            `Could not record split settlement for callback payment ${reference}:`,
+            await callbackMarkSplitResponse.text()
+          )
+
+          return Response.redirect(
+            `${getAppUrl(env, request)}/?payment=processing&order_id=${encodeURIComponent(order.id)}`,
             303
           )
         }

@@ -15,6 +15,7 @@
   },
   "vars": {
     "AUTOMATED_PAYOUTS_ENABLED": "true",
+    "PAYOUTS_VERIFY_ONLY": "true",
     "SUPABASE_URL": "https://bkykccypicpnnqcmxmsm.supabase.co",
     "SUPABASE_PUBLISHABLE_KEY": "sb_publishable_RmwbDTWbdYS0gvw_idXp6g_FL_pvNy0",
     "LIVE_PAYOUTS_ENABLED": "true",
