@@ -1,0 +1,135 @@
+.policy-page {
+  min-height: 100vh;
+  padding: 32px 16px;
+  background: #f5f7fb;
+  color: #1f2937;
+  box-sizing: border-box;
+}
+
+.policy-container {
+  max-width: 850px;
+  margin: 0 auto;
+  padding: 32px;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 16px;
+  box-shadow: 0 8px 30px rgba(15, 23, 42, 0.06);
+  box-sizing: border-box;
+}
+
+.policy-brand {
+  display: inline-block;
+  margin-bottom: 24px;
+  color: #166534;
+  font-size: 1.1rem;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.policy-label {
+  margin-bottom: 8px;
+  color: #166534;
+  font-size: 0.75rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+
+.policy-container h1 {
+  margin: 0 0 12px;
+  color: #111827;
+  font-size: clamp(1.8rem, 5vw, 2.5rem);
+  line-height: 1.2;
+}
+
+.policy-updated {
+  margin-bottom: 32px;
+  color: #6b7280;
+  font-size: 0.9rem;
+}
+
+.policy-section {
+  margin-top: 28px;
+}
+
+.policy-section h2 {
+  margin-bottom: 10px;
+  color: #166534;
+  font-size: 1.15rem;
+}
+
+.policy-section p {
+  margin: 0 0 12px;
+  color: #374151;
+  font-size: 1rem;
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+}
+
+.policy-footer {
+  margin-top: 36px;
+  padding-top: 20px;
+  border-top: 1px solid #e5e7eb;
+  color: #6b7280;
+  font-size: 0.9rem;
+  line-height: 1.7;
+}
+
+.policy-footer a {
+  color: #166534;
+  overflow-wrap: anywhere;
+}
+
+.policy-navigation {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 24px;
+}
+
+.policy-navigation button,
+.policy-link,
+.policy-back {
+  padding: 10px 14px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #166534;
+  font: inherit;
+  cursor: pointer;
+}
+
+.policy-navigation button:hover,
+.policy-link:hover,
+.policy-back:hover {
+  background: #f0fdf4;
+}
+
+.policy-link {
+  display: block;
+  width: 100%;
+  margin-top: 12px;
+  text-align: left;
+}
+
+.policy-back {
+  margin-bottom: 20px;
+}
+
+@media (max-width: 600px) {
+  .policy-page {
+    padding: 12px;
+  }
+
+  .policy-container {
+    padding: 22px 18px;
+    border-radius: 12px;
+  }
+
+  .policy-section h2 {
+    font-size: 1.05rem;
+  }
+
+  .policy-section p {
+    font-size: 0.95rem;
+  }
+}

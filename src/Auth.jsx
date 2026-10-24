@@ -1,6 +1,21 @@
 import { useState } from 'react'
 import { supabase } from './lib/supabase'
 
+function getFriendlyAuthError(error) {
+  const errorMessage = String(error?.message || '')
+  const lowerMessage = errorMessage.toLowerCase()
+
+  if (
+    lowerMessage.includes('failed to fetch') ||
+    lowerMessage.includes('network') ||
+    lowerMessage.includes('fetch')
+  ) {
+    return 'Unable to connect. Please check your internet connection and try again.'
+  }
+
+  return errorMessage || 'Something went wrong. Please try again shortly.'
+}
+
 function Auth({ onBack, onLogin }) {
   const [isLogin, setIsLogin] = useState(true)
   const [fullName, setFullName] = useState('')
@@ -23,7 +38,7 @@ function Auth({ onBack, onLogin }) {
           })
 
         if (error) {
-          setMessage(error.message)
+          setMessage(getFriendlyAuthError(error))
         } else if (data.user) {
           onLogin()
         }
@@ -41,7 +56,7 @@ function Auth({ onBack, onLogin }) {
           })
 
         if (error) {
-          setMessage(error.message)
+          setMessage(getFriendlyAuthError(error))
         } else if (data.user) {
           if (data.session) {
             setMessage('Account created successfully!')
@@ -53,16 +68,15 @@ function Auth({ onBack, onLogin }) {
         }
       }
     } catch (error) {
-      setMessage(error.message)
+      setMessage(getFriendlyAuthError(error))
+    } finally {
+      setLoading(false)
     }
-
-    setLoading(false)
   }
 
   return (
     <div className="auth-page">
       <div className="auth-card">
-
         <button
           type="button"
           className="back-button"
@@ -82,7 +96,6 @@ function Auth({ onBack, onLogin }) {
         </p>
 
         <form onSubmit={handleSubmit}>
-
           {!isLogin && (
             <input
               type="text"
@@ -117,7 +130,6 @@ function Auth({ onBack, onLogin }) {
                 ? 'Log in'
                 : 'Create account'}
           </button>
-
         </form>
 
         {message && (
@@ -138,7 +150,6 @@ function Auth({ onBack, onLogin }) {
             ? "Don't have an account? Sign up"
             : 'Already have an account? Log in'}
         </button>
-
       </div>
     </div>
   )
