@@ -11,6 +11,9 @@ export default function AdminDashboard({ user, onBack }) {
   const [riderAction, setRiderAction] = useState(null)
   const [riderFileUrls, setRiderFileUrls] = useState({})
   const [vendorAction, setVendorAction] = useState(null)
+  const [payoutAttempts, setPayoutAttempts] = useState({})
+const [loadingPayoutAttempts, setLoadingPayoutAttempts] = useState(null)
+const [payoutActionLoading, setPayoutActionLoading] = useState(null)
 
   const [data, setData] = useState({
     profiles: [],
@@ -77,6 +80,150 @@ export default function AdminDashboard({ user, onBack }) {
 
     setRiderFileUrls(urls)
   }
+  const loadPayoutAttempts = async (payoutId) => {
+  try {
+    setLoadingPayoutAttempts(payoutId)
+
+    const {
+      data: sessionData,
+      error: sessionError,
+    } = await supabase.auth.getSession()
+
+    if (sessionError) throw sessionError
+
+    const accessToken =
+      sessionData?.session?.access_token
+
+    if (!accessToken) {
+      throw new Error('You must be logged in.')
+    }
+
+    const workerBaseUrl = import.meta.env.DEV
+      ? 'http://127.0.0.1:8787'
+      : ''
+
+    const response = await fetch(
+      `${workerBaseUrl}/api/admin/payout-attempts?payout_id=${encodeURIComponent(payoutId)}`,
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      }
+    )
+
+    const result = await response.json()
+
+    if (!response.ok || !result.success) {
+      throw new Error(
+        result.message || 'Unable to load payout history.'
+      )
+    }
+
+    setPayoutAttempts((previous) => ({
+      ...previous,
+      [payoutId]: result.attempts || [],
+    }))
+  } catch (err) {
+    console.error('Payout history error:', err)
+    setError(err.message || 'Unable to load payout history.')
+  } finally {
+    setLoadingPayoutAttempts(null)
+  }
+}
+const handlePayoutAction = async (payout, action) => {
+  const actionLabels = {
+    mark_paid: 'Mark as Paid',
+    authorize_retry: 'Authorize Retry',
+    keep_under_review: 'Keep Under Review',
+    cancel: 'Cancel Payout',
+  }
+
+  const label = actionLabels[action]
+
+  if (!label) return
+
+  const note = window.prompt(
+    `${label}\n\nEnter the admin review note:`
+  )
+
+  if (!note || !note.trim()) {
+    window.alert('An explanatory admin note is required.')
+    return
+  }
+
+  const requiresConfirmation =
+    action === 'mark_paid' || action === 'cancel'
+
+  if (
+    requiresConfirmation &&
+    !window.confirm(
+      action === 'mark_paid'
+        ? 'Confirm that this payout was actually settled manually. This does not initiate a transfer.'
+        : 'Confirm cancellation of this payout and its associated commission.'
+    )
+  ) {
+    return
+  }
+
+  try {
+    setPayoutActionLoading(payout.id)
+    setError('')
+
+    const {
+      data: sessionData,
+      error: sessionError,
+    } = await supabase.auth.getSession()
+
+    if (sessionError) throw sessionError
+
+    const accessToken =
+      sessionData?.session?.access_token
+
+    if (!accessToken) {
+      throw new Error('Your admin session has expired. Please sign in again.')
+    }
+
+    const workerBaseUrl = import.meta.env.DEV
+      ? 'http://127.0.0.1:8787'
+      : ''
+
+    const response = await fetch(
+      `${workerBaseUrl}/api/admin/payout-action`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({
+          payout_id: payout.id,
+          action,
+          note: note.trim(),
+          confirmed: requiresConfirmation,
+        }),
+      }
+    )
+
+    const result = await response.json()
+
+    if (!response.ok || !result.success) {
+      throw new Error(
+        result.message || 'The payout action was not completed.'
+      )
+    }
+
+    window.alert(
+      result.message || `${label} completed.`
+    )
+
+    await loadDashboard(true)
+  } catch (err) {
+    console.error('Payout action error:', err)
+    setError(err.message || 'Unable to complete payout action.')
+  } finally {
+    setPayoutActionLoading(null)
+  }
+}
 
   const loadDashboard = async (isRefresh = false) => {
     try {
@@ -155,9 +302,45 @@ export default function AdminDashboard({ user, onBack }) {
 
         supabase
           .from('vendor_payouts')
-          .select(
-            'id, vendor_id, vendor_order_id, order_id, payout_amount, status, paystack_reference, created_at, paid_at'
-          )
+          .select(`
+  id,
+  vendor_commission_id,
+  vendor_id,
+  vendor_order_id,
+  order_id,
+  payout_amount,
+  status,
+  paystack_reference,
+  failure_reason,
+  created_at,
+  updated_at,
+  paid_at,
+  transfer_attempted_at,
+  transaction_fee_amount,
+  transfer_fee_amount,
+  manual_review_required,
+  manual_review_reason,
+  admin_notified_at,
+  manual_settlement_note,
+  vendor:profiles!vendor_payouts_vendor_id_fkey (
+    id,
+    full_name,
+    phone
+  ),
+  vendor_order:vendor_orders!vendor_payouts_vendor_order_id_fkey (
+    id,
+    status,
+    subtotal
+  ),
+  customer_order:orders!vendor_payouts_order_id_fkey (
+    id,
+    total_amount,
+    payment_status,
+    payment_reference,
+    paid_at,
+    created_at
+  )
+`)
           .order('created_at', {
             ascending: false,
           }),
@@ -190,6 +373,71 @@ export default function AdminDashboard({ user, onBack }) {
           }),
       ])
 
+      // Load vendor bank accounts for payout review
+      const payoutVendorIds = [
+        ...new Set(
+          (payoutsResult.data || [])
+            .map((payout) => payout.vendor_id)
+            .filter(Boolean)
+        ),
+      ]
+
+      let payoutAccounts = []
+
+      if (payoutVendorIds.length > 0) {
+        const { data, error } = await supabase
+          .from('vendor_payout_accounts')
+          .select(`
+            id,
+            vendor_id,
+            account_name,
+            bank_code,
+            bank_name,
+            account_number,
+            paystack_recipient_code,
+            is_verified,
+            is_active,
+            updated_at
+          `)
+          .in('vendor_id', payoutVendorIds)
+
+        if (error) {
+          throw new Error(
+            `Failed to load vendor bank accounts: ${error.message}`
+          )
+        }
+
+        payoutAccounts = data || []
+      }
+
+      const payoutAccountsByVendor = new Map()
+
+      payoutAccounts.forEach((account) => {
+        const existing = payoutAccountsByVendor.get(
+          account.vendor_id
+        )
+
+        if (
+          !existing ||
+          (account.is_active && account.is_verified)
+        ) {
+          payoutAccountsByVendor.set(
+            account.vendor_id,
+            account
+          )
+        }
+      })
+
+      const payoutsWithAccounts = (
+        payoutsResult.data || []
+      ).map((payout) => ({
+        ...payout,
+        payout_account:
+          payoutAccountsByVendor.get(
+            payout.vendor_id
+          ) || null,
+      }))
+
       const results = [
         profilesResult,
         storesResult,
@@ -219,7 +467,7 @@ export default function AdminDashboard({ user, onBack }) {
         products: productsResult.data || [],
         orders: ordersResult.data || [],
         commissions: commissionsResult.data || [],
-        payouts: payoutsResult.data || [],
+        payouts: payoutsWithAccounts,
         vendorOrders: vendorOrdersResult.data || [],
         riders: ridersResult.data || [],
         riderApplications,
@@ -3398,6 +3646,290 @@ export default function AdminDashboard({ user, onBack }) {
                 />
               </div>
             </section>
+                        {/* MANUAL PAYOUT REVIEW QUEUE */}
+            <section>
+              <div style={styles.sectionHeading}>
+                Manual Payout Review
+              </div>
+
+              <div style={styles.panel}>
+                {data.payouts.filter(
+                  (payout) =>
+                    payout.manual_review_required === true
+                ).length === 0 ? (
+                  <p style={styles.empty}>
+                    No payouts currently require manual review.
+                  </p>
+                ) : (
+                  data.payouts
+                    .filter(
+                      (payout) =>
+                        payout.manual_review_required === true
+                    )
+                    .map((payout) => {
+                      const account = payout.payout_account
+                      const vendor = payout.vendor
+                      const customerOrder = payout.customer_order
+
+                      return (
+                        <div
+                          key={payout.id}
+                          style={{
+                            padding: '16px',
+                            marginBottom: '14px',
+                            border: '1px solid #59402b',
+                            borderRadius: '8px',
+                            background: '#171511',
+                          }}
+                        >
+                          <div
+                            style={{
+                              display: 'flex',
+                              justifyContent: 'space-between',
+                              alignItems: 'center',
+                              gap: '10px',
+                              flexWrap: 'wrap',
+                            }}
+                          >
+                            <strong style={{ color: '#f0c58b' }}>
+                              Manual Review Required
+                            </strong>
+
+                            <StatusBadge value={payout.status} />
+                          </div>
+
+                          <div style={{ marginTop: '14px' }}>
+                            <strong>Vendor</strong>
+
+                            <div>
+                              {vendor?.full_name || 'Unknown vendor'}
+                            </div>
+
+                            <div>
+                              Phone: {vendor?.phone || 'Not available'}
+                            </div>
+                          </div>
+
+                          <div style={{ marginTop: '14px' }}>
+                            <strong>Payout Amount</strong>
+
+                            <div style={{ fontSize: '20px', marginTop: '5px' }}>
+                              {formatNaira(payout.payout_amount)}
+                            </div>
+                          </div>
+
+                          <div style={{ marginTop: '14px' }}>
+                            <strong>Bank Account</strong>
+
+                            <div>
+                              Bank: {account?.bank_name || 'Not available'}
+                            </div>
+
+                            <div>
+                              Account name: {account?.account_name || 'Not available'}
+                            </div>
+
+                            <div>
+                              Account number: {account?.account_number || 'Not available'}
+                            </div>
+
+                            <div>
+                              Verification: {account?.is_verified ? 'Verified' : 'Not verified'}
+                            </div>
+                          </div>
+
+                          <div style={{ marginTop: '14px' }}>
+                            <strong>Payment References</strong>
+
+                            <div style={{ overflowWrap: 'anywhere' }}>
+                              Customer payment: {customerOrder?.payment_reference || '—'}
+                            </div>
+
+                            <div style={{ overflowWrap: 'anywhere' }}>
+                              Vendor payout: {payout.paystack_reference || '—'}
+                            </div>
+                          </div>
+
+                          <div style={{ marginTop: '14px' }}>
+                            <strong>Order Details</strong>
+
+                            <div>
+                              Order: {payout.order_id || '—'}
+                            </div>
+
+                            <div>
+                              Vendor order: {payout.vendor_order_id || '—'}
+                            </div>
+
+                            <div>
+                              Order payment status: {customerOrder?.payment_status || '—'}
+                            </div>
+                          </div>
+
+                          <div style={{ marginTop: '14px' }}>
+                            <strong>Review Information</strong>
+
+                            <div style={{ color: '#e5a18d', marginTop: '5px' }}>
+                              Review reason: {payout.manual_review_reason || 'No manual review reason recorded'}
+                            </div>
+
+                            <div style={{ marginTop: '5px' }}>
+                              Failure reason: {payout.failure_reason || 'No failure reason recorded'}
+                            </div>
+
+                            <div style={{ marginTop: '5px' }}>
+                              Transfer attempt date: {
+                                payout.transfer_attempted_at
+                                  ? new Date(payout.transfer_attempted_at).toLocaleString()
+                                  : 'Not recorded'
+                              }
+                            </div>
+
+                            <div style={{ marginTop: '5px' }}>
+                              Last updated: {
+                                payout.updated_at
+                                  ? new Date(payout.updated_at).toLocaleString()
+                                  : 'Not available'
+                              }
+                            </div>
+                          </div>
+                          <div
+  style={{
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: '8px',
+    marginTop: '16px',
+  }}
+>
+  <button
+    type="button"
+    disabled={payoutActionLoading === payout.id}
+    onClick={() =>
+      handlePayoutAction(payout, 'mark_paid')
+    }
+    style={styles.riderButton}
+  >
+    Mark as Paid
+  </button>
+
+  <button
+    type="button"
+    disabled={payoutActionLoading === payout.id}
+    onClick={() =>
+      handlePayoutAction(payout, 'authorize_retry')
+    }
+    style={styles.riderButton}
+  >
+    Authorize Retry
+  </button>
+
+  <button
+    type="button"
+    disabled={payoutActionLoading === payout.id}
+    onClick={() =>
+      handlePayoutAction(payout, 'keep_under_review')
+    }
+    style={styles.riderButton}
+  >
+    Keep Under Review
+  </button>
+
+  <button
+    type="button"
+    disabled={payoutActionLoading === payout.id}
+    onClick={() =>
+      handlePayoutAction(payout, 'cancel')
+    }
+    style={{
+      ...styles.riderButton,
+      border: '1px solid #a34b4b',
+      color: '#f0a0a0',
+    }}
+  >
+    Cancel Payout
+  </button>
+</div>
+
+{payoutActionLoading === payout.id && (
+  <p style={{ marginTop: '8px' }}>
+    Processing admin action...
+  </p>
+)}
+
+                          <button
+                            type="button"
+                            disabled={loadingPayoutAttempts === payout.id}
+                            onClick={() => loadPayoutAttempts(payout.id)}
+                            style={{
+                              ...styles.riderButton,
+                              marginTop: '14px',
+                              padding: '9px 12px',
+                            }}
+                          >
+                            {loadingPayoutAttempts === payout.id
+                              ? 'Loading attempts...'
+                              : 'View Transfer History'}
+                          </button>
+
+                          {Object.prototype.hasOwnProperty.call(
+                            payoutAttempts,
+                            payout.id
+                          ) && (
+                            <div style={{ marginTop: '12px' }}>
+                              {payoutAttempts[payout.id].length === 0 ? (
+                                <p style={styles.empty}>
+                                  No transfer attempts recorded.
+                                </p>
+                              ) : (
+                                payoutAttempts[payout.id].map((attempt) => (
+                                  <div
+                                    key={attempt.id}
+                                    style={{
+                                      padding: '10px',
+                                      marginBottom: '8px',
+                                      border: '1px solid #343b40',
+                                      borderRadius: '6px',
+                                      overflowWrap: 'anywhere',
+                                    }}
+                                  >
+                                    <strong>
+                                      Attempt {attempt.attempt_number}
+                                    </strong>
+
+                                    <div>
+                                      Status: {formatStatus(attempt.status)}
+                                    </div>
+
+                                    <div>
+                                      Reference: {attempt.paystack_reference || '—'}
+                                    </div>
+
+                                    <div>
+                                      Paystack status: {attempt.paystack_transfer_status || '—'}
+                                    </div>
+
+                                    <div>
+                                      Failure: {attempt.failure_reason || '—'}
+                                    </div>
+
+                                    <div>
+                                      Submitted: {
+                                        attempt.submitted_at
+                                          ? new Date(attempt.submitted_at).toLocaleString()
+                                          : '—'
+                                      }
+                                    </div>
+                                  </div>
+                                ))
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })
+                )}
+              </div>
+            </section>
 
             {/* RECENT ORDERS */}
             <section>
@@ -3604,18 +4136,83 @@ export default function AdminDashboard({ user, onBack }) {
                                   />
                                 </td>
 
-                                <td
-                                  style={
-                                    styles.reference
-                                  }
-                                >
-                                  {payout.paystack_reference
-                                    ? payout.paystack_reference.slice(
-                                        0,
-                                        24
-                                      )
-                                    : '—'}
-                                </td>
+                                <td style={styles.reference}>
+  <div>
+    {payout.paystack_reference
+      ? payout.paystack_reference.slice(0, 24)
+      : '—'}
+  </div>
+
+  <button
+    type="button"
+    disabled={loadingPayoutAttempts === payout.id}
+    onClick={() => loadPayoutAttempts(payout.id)}
+    style={{
+      marginTop: '8px',
+      padding: '6px 10px',
+      borderRadius: '6px',
+      border: '1px solid #ccc',
+      cursor: 'pointer',
+      fontSize: '12px',
+    }}
+  >
+    {loadingPayoutAttempts === payout.id
+      ? 'Loading...'
+      : 'View Attempts'}
+  </button>
+
+  {Object.prototype.hasOwnProperty.call(
+    payoutAttempts,
+    payout.id
+  ) && (
+    <div style={{ marginTop: '10px', minWidth: '180px' }}>
+      {payoutAttempts[payout.id].length === 0 ? (
+        <p>No transfer attempts recorded.</p>
+      ) : (
+        payoutAttempts[payout.id].map((attempt) => (
+          <div
+            key={attempt.id}
+            style={{
+              padding: '8px',
+              marginBottom: '8px',
+              border: '1px solid #ddd',
+              borderRadius: '6px',
+              whiteSpace: 'normal',
+            }}
+          >
+            <strong>
+              Attempt {attempt.attempt_number}
+            </strong>
+
+            <div>
+              Status: {formatStatus(attempt.status)}
+            </div>
+
+            <div>
+              Reference: {attempt.paystack_reference || '—'}
+            </div>
+
+            <div>
+              Paystack status: {attempt.paystack_transfer_status || '—'}
+            </div>
+
+            {attempt.failure_reason && (
+              <div>
+                Failure: {attempt.failure_reason}
+              </div>
+            )}
+
+            <div>
+              Submitted: {attempt.submitted_at
+                ? new Date(attempt.submitted_at).toLocaleString()
+                : '—'}
+            </div>
+          </div>
+        ))
+      )}
+    </div>
+  )}
+</td>
                               </tr>
                             )
                           )}

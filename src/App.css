@@ -1043,3 +1043,33 @@ a {
     padding: 17px;
   }
 }
+.password-input-wrapper {
+  position: relative;
+  width: 100%;
+}
+
+.password-input-wrapper input {
+  width: 100%;
+  padding-right: 48px;
+  box-sizing: border-box;
+}
+
+.password-toggle {
+  position: absolute;
+  top: 50%;
+  right: 12px;
+  transform: translateY(-50%);
+  border: none;
+  background: transparent;
+  padding: 5px;
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  width: auto;
+  color: inherit;
+}
+
+.password-toggle:hover {
+  background: transparent;
+  opacity: 0.75;
+}

@@ -41,6 +41,7 @@ function App() {
   const [showProfile, setShowProfile] = useState(false)
   const [showAdminDashboard, setShowAdminDashboard] = useState(false)
   const [showRiderDashboard, setShowRiderDashboard] = useState(false)
+  const [passwordRecovery, setPasswordRecovery] = useState(false)
 
   const [user, setUser] = useState(null)
   const [store, setStore] = useState(null)
@@ -342,29 +343,42 @@ function App() {
     loadSession()
 
     const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange(
-      async (_event, session) => {
-        if (!mounted) return
+  data: { subscription },
+} = supabase.auth.onAuthStateChange((event, session) => {
+  if (!mounted) return
 
-        setUser(session?.user ?? null)
+  // Handle password recovery separately.
+  // Do not make database requests inside this callback.
+  if (event === 'PASSWORD_RECOVERY') {
+    setPasswordRecovery(true)
+    setShowAuth(true)
+    setUser(session?.user ?? null)
+    setLoading(false)
+    return
+  }
 
-        if (session?.user) {
-          await loadStore(session.user.id)
-          await loadVendorSubscription(session.user.id)
-          await checkAdmin()
-        } else {
-          setStore(null)
-          setVendorSubscription(null)
-          setIsAdmin(false)
-          setSubscriptionLoading(false)
-        }
+  setUser(session?.user ?? null)
 
-        if (mounted) {
-          setLoading(false)
-        }
-      }
-    )
+  // Run database requests outside the auth callback.
+  setTimeout(async () => {
+    if (!mounted) return
+
+    if (session?.user) {
+      await loadStore(session.user.id)
+      await loadVendorSubscription(session.user.id)
+      await checkAdmin()
+    } else {
+      setStore(null)
+      setVendorSubscription(null)
+      setIsAdmin(false)
+      setSubscriptionLoading(false)
+    }
+
+    if (mounted) {
+      setLoading(false)
+    }
+  }, 0)
+})
 
     return () => {
       mounted = false
@@ -610,15 +624,20 @@ function App() {
    */
 
   if (showAuth) {
-    return (
-      <Auth
-        onBack={goBack}
-        onLogin={() => {
-          goBack()
-        }}
-      />
-    )
-  }
+  return (
+    <Auth
+      passwordRecovery={passwordRecovery}
+      onBack={goBack}
+      onLogin={() => {
+        goBack()
+      }}
+      onPasswordResetComplete={() => {
+        setPasswordRecovery(false)
+        showView('auth', false)
+      }}
+    />
+  )
+}
 
   /*
    * ADMIN DASHBOARD

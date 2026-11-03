@@ -221,6 +221,58 @@ function OrderChat({
       })
 
       setText('')
+
+      // Send email notification to the other participant.
+      // Email failure must not interrupt chat messaging.
+
+      try {
+        const {
+          data: sessionData,
+          error: sessionError,
+        } = await supabase.auth.getSession()
+
+        const accessToken =
+          sessionData?.session?.access_token
+
+        if (sessionError) {
+          console.error(
+            'Could not retrieve session for chat email:',
+            sessionError.message
+          )
+        } else if (accessToken) {
+          const workerUrl =
+            import.meta.env.VITE_WORKER_URL ||
+            'https://uniabuja-market.mammanabideen.workers.dev'
+
+          const emailResponse = await fetch(
+            `${workerUrl}/api/chat/email-notification`,
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${accessToken}`,
+              },
+              body: JSON.stringify({
+                message_id: data.id,
+                chat_id: chat.id,
+              }),
+            }
+          )
+
+          if (!emailResponse.ok) {
+            console.error(
+              'Chat email notification failed:',
+              emailResponse.status
+            )
+          }
+        }
+      } catch (emailError) {
+        console.error(
+          'Chat email notification error:',
+          emailError.message
+        )
+      }
+
     } catch (error) {
       console.error(
         'Send chat message error:',

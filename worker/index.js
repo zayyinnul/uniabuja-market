@@ -111,42 +111,247 @@ async function getAuthenticatedUser(
     return null
   }
 }
+async function isAuthenticatedUserAdmin(
+  request,
+  env
+) {
+  const authHeader =
+    request.headers.get('Authorization')
+
+  if (!authHeader?.startsWith('Bearer ')) {
+    return false
+  }
+
+  const response = await fetch(
+    `${env.SUPABASE_URL}/rest/v1/rpc/is_admin`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        apikey: env.SUPABASE_PUBLISHABLE_KEY,
+        Authorization: authHeader,
+      },
+      body: JSON.stringify({}),
+    }
+  )
+
+  if (!response.ok) {
+    console.error(
+      'Admin verification failed:',
+      await response.text()
+    )
+    return false
+  }
+
+  try {
+    return (await response.json()) === true
+  } catch {
+    return false
+  }
+}
+
+async function sendResendEmail(
+  env,
+  {
+    to,
+    subject,
+    html,
+    idempotencyKey,
+  }
+) {
+  if (!env.RESEND_API_KEY || !to) {
+    console.error(
+      'Email not sent: missing API key or recipient.'
+    )
+    return false
+  }
+
+  try {
+    const response = await fetch(
+      'https://api.resend.com/emails',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${env.RESEND_API_KEY}`,
+          'Content-Type': 'application/json',
+          ...(idempotencyKey
+            ? {
+                'Idempotency-Key': idempotencyKey,
+              }
+            : {}),
+        },
+        body: JSON.stringify({
+          from: 'UniAbuja Market <notifications@mail.uniabujamarket.com.ng>',
+          to: [to],
+          subject,
+          html,
+        }),
+      }
+    )
+
+    if (!response.ok) {
+      console.error(
+        'Resend email failed:',
+        response.status,
+        await response.text()
+      )
+      return false
+    }
+
+    return true
+  } catch (error) {
+    console.error(
+      'Resend email error:',
+      error.message
+    )
+    return false
+  }
+}
+async function getUserEmail(
+  env,
+  userId
+) {
+  if (!userId) {
+    return null
+  }
+
+  try {
+    const response =
+      await supabaseRequest(
+        env,
+        `/auth/v1/admin/users/${encodeURIComponent(userId)}`,
+        {
+          method: 'GET',
+        }
+      )
+
+    if (!response.ok) {
+      console.error(
+        'Could not retrieve recipient email:',
+        response.status,
+        await response.text()
+      )
+      return null
+    }
+
+    const user = await response.json()
+
+    return user?.email || null
+  } catch (error) {
+    console.error(
+      'Recipient email lookup error:',
+      error.message
+    )
+    return null
+  }
+}
 
 async function updateVendorPayout(
   env,
   payoutId,
   updates
 ) {
-  const response =
-    await supabaseRequest(
+  const allowedCurrentStatuses = {
+    paid: ['processing', 'pending'],
+    failed: ['processing', 'pending'],
+    reversed: [
+      'processing',
+      'pending',
+      'paid',
+      'failed',
+    ],
+  }
+
+  const targetStatus = updates?.status
+
+  if (
+    !payoutId ||
+    !targetStatus ||
+    !allowedCurrentStatuses[targetStatus]
+  ) {
+    console.error(
+      `Refusing payout update for ${
+        payoutId || 'unknown payout'
+      }: invalid payout ID or target status.`
+    )
+
+    return false
+  }
+
+  const allowedStatuses =
+    allowedCurrentStatuses[targetStatus]
+
+  const statusFilter =
+    `&status=in.(${allowedStatuses.join(',')})`
+
+  let response
+
+  try {
+    response = await supabaseRequest(
       env,
       `/rest/v1/vendor_payouts?id=eq.${encodeURIComponent(
         payoutId
-      )}`,
+      )}${statusFilter}`,
       {
         method: 'PATCH',
         headers: {
-          'Content-Type':
-            'application/json',
-          Prefer:
-            'return=minimal',
+          'Content-Type': 'application/json',
+          Prefer: 'return=representation',
         },
         body: JSON.stringify({
           ...updates,
-          updated_at:
-            new Date().toISOString(),
+          updated_at: new Date().toISOString(),
         }),
       }
     )
+  } catch (error) {
+    console.error(
+      `Payout ${payoutId}: status update request failed.`,
+      error
+    )
+
+    return false
+  }
 
   if (!response.ok) {
     console.error(
       `Could not update vendor payout ${payoutId}:`,
       await response.text()
     )
+
+    return false
   }
 
-  return response
+  let updatedRows
+
+  try {
+    updatedRows = await response.json()
+  } catch (error) {
+    console.error(
+      `Payout ${payoutId}: could not confirm the saved status update.`,
+      error
+    )
+
+    return false
+  }
+
+  if (
+    !Array.isArray(updatedRows) ||
+    updatedRows.length !== 1 ||
+    updatedRows[0]?.status !== targetStatus
+  ) {
+    console.warn(
+      `Payout ${payoutId}: the requested status update to "${targetStatus}" was not confirmed.`
+    )
+
+    return false
+  }
+
+  console.log(
+    `Payout ${payoutId}: status update to "${targetStatus}" confirmed.`
+  )
+
+  return true
 }
 
 async function deletePushSubscription(
@@ -436,8 +641,7 @@ async function reconcileTransfer(
   env,
   payout
 ) {
-  const reference =
-    payout.paystack_reference
+  const reference = payout.paystack_reference
 
   if (!reference) {
     return {
@@ -446,8 +650,11 @@ async function reconcileTransfer(
     }
   }
 
-  const verifyResponse =
-    await fetch(
+  let verifyResponse
+  let verifyData
+
+  try {
+    verifyResponse = await fetch(
       `https://api.paystack.co/transfer/verify/${encodeURIComponent(
         reference
       )}`,
@@ -460,14 +667,22 @@ async function reconcileTransfer(
       }
     )
 
-  let verifyData = null
+    try {
+      verifyData = await verifyResponse.json()
+    } catch {
+      console.error(
+        `Payout ${payout.id}: Paystack verification returned invalid JSON.`
+      )
 
-  try {
-    verifyData =
-      await verifyResponse.json()
-  } catch {
+      return {
+        found: false,
+        temporaryError: true,
+      }
+    }
+  } catch (error) {
     console.error(
-      'Paystack transfer verification returned invalid JSON.'
+      `Payout ${payout.id}: Paystack verification request failed.`,
+      error
     )
 
     return {
@@ -476,38 +691,34 @@ async function reconcileTransfer(
     }
   }
 
-    if (verifyResponse.status === 404) {
-  if (!payout.transfer_attempted_at) {
-    console.log(
-      `Payout ${payout.id}: Paystack has no transfer for reference ${reference}, and no transfer attempt is recorded. A first attempt may proceed.`
+  if (verifyResponse.status === 404) {
+    if (!payout.transfer_attempted_at) {
+      console.log(
+        `Payout ${payout.id}: Paystack has no transfer for reference ${reference}, and no transfer attempt is recorded. A first attempt may proceed.`
+      )
+
+      return {
+        found: false,
+        temporaryError: false,
+      }
+    }
+
+    console.warn(
+      `Payout ${payout.id}: Paystack returned 404 despite a recorded transfer attempt. No duplicate transfer will be submitted.`
     )
 
     return {
       found: false,
-      temporaryError: false,
+      temporaryError: true,
     }
   }
 
-  console.warn(
-    `Payout ${payout.id}: Paystack returned 404 for reference ${reference}, but a transfer attempt was recorded. No duplicate transfer will be submitted.`
-  )
-
-  return {
-    found: false,
-    temporaryError: true,
-  }
-}
-
   if (!verifyResponse.ok) {
     console.error(
-      'Paystack transfer verification failed:',
+      `Payout ${payout.id}: Paystack verification failed.`,
       JSON.stringify({
-        httpStatus:
-          verifyResponse.status,
-        paystackStatus:
-          verifyData?.status,
-        message:
-          verifyData?.message,
+        httpStatus: verifyResponse.status,
+        message: verifyData?.message,
       })
     )
 
@@ -518,11 +729,12 @@ async function reconcileTransfer(
   }
 
   if (
-    !verifyData?.status ||
-    !verifyData?.data
+    verifyData?.status !== true ||
+    !verifyData?.data ||
+    typeof verifyData.data !== 'object'
   ) {
     console.error(
-      'Paystack returned an unexpected transfer verification response:',
+      `Payout ${payout.id}: unexpected Paystack verification response.`,
       verifyData
     )
 
@@ -532,83 +744,88 @@ async function reconcileTransfer(
     }
   }
 
-  const transfer =
-    verifyData.data
+  const transfer = verifyData.data
 
-  const transferStatus =
-    transfer.status
+  if (transfer.reference !== reference) {
+    console.error(
+      `Payout ${payout.id}: Paystack returned a transfer reference that does not match the payout reference.`
+    )
+
+    return {
+      found: false,
+      temporaryError: true,
+    }
+  }
+
+  const transferStatus = transfer.status
 
   console.log(
     `Payout ${payout.id} transfer status: ${transferStatus}`
   )
 
-  if (
-    transferStatus ===
-    'success'
-  ) {
-    await updateVendorPayout(
-      env,
-      payout.id,
-      {
-        status: 'paid',
-        paid_at:
-          new Date().toISOString(),
-        failure_reason: null,
-      }
-    )
+  let updates
 
+  if (transferStatus === 'success') {
+    updates = {
+      status: 'paid',
+      paid_at: new Date().toISOString(),
+      failure_reason: null,
+    }
+  } else if (transferStatus === 'failed') {
+    updates = {
+      status: 'failed',
+      failure_reason:
+        transfer.reason ||
+        'Paystack transfer failed',
+    }
+  } else if (transferStatus === 'reversed') {
+    updates = {
+      status: 'reversed',
+      failure_reason:
+        transfer.reason ||
+        'Paystack transfer was reversed',
+    }
+  } else {
+    // A queued, pending, or otherwise non-terminal transfer
+    // must not trigger a second transfer submission.
     return {
       found: true,
-      terminal: true,
+      terminal: false,
     }
   }
 
-  if (
-    transferStatus ===
-    'failed'
-  ) {
+  const updateConfirmed =
     await updateVendorPayout(
       env,
       payout.id,
-      {
-        status: 'failed',
-        failure_reason:
-          transfer.reason ||
-          'Paystack transfer failed',
-      }
+      updates
+    )
+
+  if (!updateConfirmed) {
+    console.error(
+      `Payout ${payout.id}: Paystack reports "${transferStatus}", but the database update was not confirmed. Leaving it for reconciliation.`
     )
 
     return {
       found: true,
-      terminal: true,
-    }
-  }
-
-  if (
-    transferStatus ===
-    'reversed'
-  ) {
-    await updateVendorPayout(
-      env,
-      payout.id,
-      {
-        status: 'reversed',
-        failure_reason:
-          transfer.reason ||
-          'Paystack transfer was reversed',
-      }
-    )
-
-    return {
-      found: true,
-      terminal: true,
+      terminal: false,
+      temporaryError: true,
     }
   }
 
   return {
-    found: true,
-    terminal: false,
-  }
+  found: true,
+  terminal: true,
+  temporaryError: false,
+  transferStatus,
+  transferReason:
+    transfer.reason ||
+    (transferStatus === 'failed'
+      ? 'Paystack transfer failed'
+      : transferStatus === 'reversed'
+        ? 'Paystack transfer was reversed'
+        : null),
+}
 }
 
 // ---------------------------------------------------------
@@ -619,28 +836,74 @@ async function processVendorPayout(
   env,
   payout
 ) {
-  const reference =
-    payout.paystack_reference
+  // Defence in depth: split and unknown payout methods
+  // must never enter the separate-transfer workflow.
+  if (!payout.vendor_commission_id) {
+    console.error(
+      `Payout ${payout.id}: commission ID is missing. Transfer blocked.`
+    )
+    return
+  }
+
+  let commissionResponse
+
+  try {
+    commissionResponse = await supabaseRequest(
+      env,
+      `/rest/v1/vendor_commissions?id=eq.${encodeURIComponent(
+        payout.vendor_commission_id
+      )}&select=id,payout_method&limit=1`,
+      { method: 'GET' }
+    )
+  } catch (error) {
+    console.error(
+      `Payout ${payout.id}: could not verify commission payout method. Transfer blocked.`,
+      error
+    )
+    return
+  }
+
+  let commissionRows
+
+  try {
+    commissionRows = await commissionResponse.json()
+  } catch {
+    commissionRows = null
+  }
+
+  if (
+    !commissionResponse.ok ||
+    !Array.isArray(commissionRows) ||
+    commissionRows.length !== 1 ||
+    commissionRows[0].payout_method !== 'transfer'
+  ) {
+    console.error(
+      `Payout ${payout.id}: commission is missing, ambiguous, split, or not explicitly marked transfer. Transfer blocked.`
+    )
+    return
+  }
+
+  const reference = payout.paystack_reference
 
   if (!reference) {
     console.error(
-      `Payout ${payout.id} has no Paystack reference`
+      `Payout ${payout.id} has no Paystack reference.`
     )
 
     return
   }
 
+  // Reconcile first. Never submit another transfer while
+  // the outcome of an earlier attempt is uncertain.
   const transferCheck =
     await reconcileTransfer(
       env,
       payout
     )
 
-  if (
-    transferCheck.temporaryError
-  ) {
-    console.log(
-      `Payout ${payout.id}: temporary Paystack verification problem. Leaving payout processing.`
+  if (transferCheck.temporaryError) {
+    console.warn(
+      `Payout ${payout.id}: reconciliation was inconclusive. No transfer will be submitted.`
     )
 
     return
@@ -650,12 +913,11 @@ async function processVendorPayout(
     return
   }
 
-  // Never submit a second transfer if a previous attempt
-  // may have reached Paystack but its result is uncertain.
   if (payout.transfer_attempted_at) {
     console.error(
-      `Payout ${payout.id} has a previous transfer attempt but Paystack has not confirmed the transfer. No duplicate transfer will be submitted.`
+      `Payout ${payout.id} has a previous transfer attempt. No duplicate transfer will be submitted.`
     )
+
     return
   }
 
@@ -670,14 +932,13 @@ async function processVendorPayout(
       }
     )
 
-  let accountData = null
+  let accountData
 
   try {
-    accountData =
-      await accountResponse.json()
+    accountData = await accountResponse.json()
   } catch {
     console.error(
-      `Could not read payout account response for vendor ${payout.vendor_id}`
+      `Could not read payout account response for vendor ${payout.vendor_id}.`
     )
 
     return
@@ -685,20 +946,17 @@ async function processVendorPayout(
 
   if (
     !accountResponse.ok ||
-    !Array.isArray(
-      accountData
-    ) ||
-    !accountData.length
+    !Array.isArray(accountData) ||
+    accountData.length !== 1
   ) {
     console.error(
-      `No payout account found for vendor ${payout.vendor_id}`
+      `Could not confirm exactly one payout account for vendor ${payout.vendor_id}.`
     )
 
     return
   }
 
-  const account =
-    accountData[0]
+  const account = accountData[0]
 
   if (
     !account.is_verified ||
@@ -706,63 +964,79 @@ async function processVendorPayout(
     !account.paystack_recipient_code
   ) {
     console.error(
-      `Vendor ${payout.vendor_id} does not have an active verified Paystack recipient`
+      `Vendor ${payout.vendor_id} does not have an active, verified Paystack recipient.`
     )
 
     return
   }
 
-  const payoutAmount =
-    Number(
-      payout.payout_amount
-    )
+  const payoutAmount = Number(payout.payout_amount)
+  const amountInKobo = Math.round(payoutAmount * 100)
 
   if (
-    !Number.isFinite(
-      payoutAmount
-    ) ||
-    payoutAmount <= 0
+    !Number.isFinite(payoutAmount) ||
+    payoutAmount <= 0 ||
+    !Number.isSafeInteger(amountInKobo) ||
+    amountInKobo <= 0 ||
+    Math.abs(payoutAmount * 100 - amountInKobo) > 0.000001
   ) {
     console.error(
-      `Invalid payout amount for ${payout.id}:`,
+      `Payout ${payout.id} has an invalid payout amount:`,
       payout.payout_amount
     )
 
-    await updateVendorPayout(
-      env,
-      payout.id,
-      {
-        status: 'failed',
-        failure_reason:
-          'Invalid payout amount',
-      }
-    )
+    const updateConfirmed =
+      await updateVendorPayout(
+        env,
+        payout.id,
+        {
+          status: 'failed',
+          failure_reason: 'Invalid payout amount',
+        }
+      )
+
+    if (!updateConfirmed) {
+      console.error(
+        `Payout ${payout.id}: invalid amount was detected, but its failed status was not confirmed.`
+      )
+    }
 
     return
   }
 
-  const amountInKobo =
-    Math.round(
-      payoutAmount * 100
+  // These guards must remain before the transfer reservation
+  // and before any call that creates a Paystack transfer.
+  if (env.PAYOUTS_VERIFY_ONLY === 'true') {
+    console.log(
+      `Payout ${payout.id}: verification-only mode. No transfer will be created.`
     )
-    if (env.PAYOUTS_VERIFY_ONLY === 'true') {
-  console.log(
-    `Payout ${payout.id}: PAYOUTS_VERIFY_ONLY is enabled. No real transfer will be created.`
-  )
-  return
-}
+
+    return
+  }
 
   if (
-    env.LIVE_PAYOUTS_ENABLED !==
-    'true'
+    env.AUTOMATED_PAYOUTS_ENABLED !== 'true' ||
+    env.LIVE_PAYOUTS_ENABLED !== 'true'
   ) {
     console.log(
-      `Payout ${payout.id}: LIVE_PAYOUTS_ENABLED is not true. No real transfer will be created.`
+      `Payout ${payout.id}: automated or live payouts are disabled. No transfer will be created.`
     )
 
     return
   }
-    // Atomically reserve the one permitted transfer attempt.
+
+  if (
+    !env.PAYSTACK_SECRET_KEY ||
+    !env.PAYSTACK_SECRET_KEY.startsWith('sk_live_')
+  ) {
+    console.error(
+      `Payout ${payout.id}: a Paystack Live Mode secret key is required.`
+    )
+
+    return
+  }
+
+  // Atomically reserve the one permitted transfer attempt.
   let attemptResponse
 
   try {
@@ -781,9 +1055,10 @@ async function processVendorPayout(
     )
   } catch (error) {
     console.error(
-      `Could not reserve transfer attempt for payout ${payout.id}:`,
+      `Could not reserve the transfer attempt for payout ${payout.id}.`,
       error
     )
+
     return
   }
 
@@ -792,6 +1067,7 @@ async function processVendorPayout(
       `Transfer attempt reservation failed for payout ${payout.id}:`,
       await attemptResponse.text()
     )
+
     return
   }
 
@@ -801,51 +1077,60 @@ async function processVendorPayout(
     attemptGranted = await attemptResponse.json()
   } catch {
     console.error(
-      `Could not read transfer attempt reservation for payout ${payout.id}.`
+      `Could not read the transfer reservation result for payout ${payout.id}.`
     )
+
     return
   }
 
   if (attemptGranted !== true) {
     console.log(
-      `Payout ${payout.id}: transfer attempt was already reserved. No new transfer will be submitted.`
+      `Payout ${payout.id}: the transfer attempt was not granted. No transfer will be submitted.`
     )
+
     return
   }
 
-  const transferResponse =
-    await fetch(
+  // From this point onward, a request or response failure is
+  // treated as uncertain. Later runs must reconcile first.
+  let transferResponse
+
+  try {
+    transferResponse = await fetch(
       'https://api.paystack.co/transfer',
       {
         method: 'POST',
         headers: {
           Authorization:
             `Bearer ${env.PAYSTACK_SECRET_KEY}`,
-          'Content-Type':
-            'application/json',
+          'Content-Type': 'application/json',
         },
         body: JSON.stringify({
           source: 'balance',
-          amount:
-            amountInKobo,
-          recipient:
-            account.paystack_recipient_code,
+          amount: amountInKobo,
+          recipient: account.paystack_recipient_code,
           reference,
-          reason:
-            'UniAbuja Market vendor payout',
+          reason: 'UniAbuja Market vendor payout',
           currency: 'NGN',
         }),
       }
     )
+  } catch (error) {
+    console.error(
+      `Payout ${payout.id}: transfer request outcome is uncertain. Do not retry automatically.`,
+      error
+    )
 
-  let transferData = null
+    return
+  }
+
+  let transferData
 
   try {
-    transferData =
-      await transferResponse.json()
+    transferData = await transferResponse.json()
   } catch {
     console.error(
-      `Paystack transfer returned invalid JSON for payout ${payout.id}.`
+      `Payout ${payout.id}: Paystack returned invalid transfer JSON. Reconciliation is required; do not retry automatically.`
     )
 
     return
@@ -854,133 +1139,851 @@ async function processVendorPayout(
   console.log(
     'Paystack transfer response:',
     JSON.stringify({
-      httpStatus:
-        transferResponse.status,
-      status:
-        transferData?.status,
-      message:
-        transferData?.message,
-      transferStatus:
-        transferData?.data?.status,
-      reference:
-        transferData?.data?.reference,
+      httpStatus: transferResponse.status,
+      status: transferData?.status,
+      message: transferData?.message,
+      transferStatus: transferData?.data?.status,
+      reference: transferData?.data?.reference,
     })
   )
 
-  if (
-    !transferResponse.ok
-  ) {
-    const message =
-      transferData?.message ||
-      'Paystack transfer request failed'
+  if (!transferResponse.ok) {
+  const message =
+    typeof transferData?.message === 'string'
+      ? transferData.message
+      : 'Paystack transfer request failed'
 
+  const normalizedMessage = message.toLowerCase()
+
+  // These responses can have an uncertain outcome.
+  if ([408, 409, 429].includes(transferResponse.status) ||
+      transferResponse.status >= 500) {
     console.error(
-      `Paystack transfer request was not accepted for payout ${payout.id}:`,
+      `Payout ${payout.id}: uncertain Paystack response; reconcile before retrying.`,
+      transferResponse.status,
       message
     )
+    return
+  }
 
-    // Paystack explicitly rejected this transfer because
-    // the available balance was insufficient.
-    // Stop the automatic retry loop; reconcile before retrying.
-    if (
-      message.toLowerCase().includes('balance is not enough')
-    ) {
-      await updateVendorPayout(
-        env,
-        payout.id,
-        {
-          status: 'failed',
-          failure_reason:
-            'Paystack rejected transfer: insufficient balance. Manual reconciliation required before retry.',
-        }
-      )
+  // Record a definitive client-side rejection. Retry eligibility
+  // is checked separately; recording failure does not mean retry now.
+  if (transferResponse.status >= 400 &&
+      transferResponse.status < 500) {
+    const insufficientBalance =
+  /insufficient balance|balance is not enough|insufficient funds|not enough balance/i.test(message)
 
+    const updateConfirmed = await updateVendorPayout(
+      env,
+      payout.id,
+      {
+        status: 'failed',
+        failure_reason: insufficientBalance
+          ? `Paystack rejected transfer: insufficient balance. ${message}`
+          : `Paystack rejected transfer: ${message}`,
+      }
+    )
+
+    if (!updateConfirmed) {
       console.error(
-        `Payout ${payout.id} marked failed after Paystack rejected the transfer for insufficient balance.`
+        `Payout ${payout.id}: rejection received but failed status was not confirmed.`
       )
     }
 
     return
   }
 
+  console.error(
+    `Payout ${payout.id}: unexpected Paystack response.`,
+    transferResponse.status,
+    message
+  )
+  return
+}
+
   if (
-    !transferData?.status
+    transferData?.status !== true ||
+    !transferData?.data ||
+    transferData.data.reference !== reference
   ) {
     console.error(
-      `Paystack returned an unsuccessful response for payout ${payout.id}:`,
-      transferData
+      `Payout ${payout.id}: Paystack response did not confirm the expected transfer reference. Reconciliation is required.`
     )
 
     return
   }
 
-  const transferStatus =
-    transferData?.data?.status
+  const transfer = transferData.data
 
-  if (
-    transferStatus ===
-    'success'
-  ) {
-    await updateVendorPayout(
-      env,
-      payout.id,
-      {
-        status: 'paid',
-        paid_at:
-          new Date().toISOString(),
-        failure_reason: null,
-      }
+  let updates = null
+
+  if (transfer.status === 'success') {
+    updates = {
+      status: 'paid',
+      paid_at: new Date().toISOString(),
+      failure_reason: null,
+    }
+  } else if (transfer.status === 'failed') {
+    updates = {
+      status: 'failed',
+      failure_reason:
+        transfer.reason || 'Paystack transfer failed',
+    }
+  } else if (transfer.status === 'reversed') {
+    updates = {
+      status: 'reversed',
+      failure_reason:
+        transfer.reason || 'Paystack transfer was reversed',
+    }
+  }
+
+  if (!updates) {
+    console.log(
+      `Payout ${payout.id} remains processing. Paystack transfer status: ${transfer.status || 'unknown'}.`
     )
 
     return
   }
 
-  if (
-    transferStatus ===
-    'failed'
-  ) {
+  const updateConfirmed =
     await updateVendorPayout(
       env,
       payout.id,
-      {
-        status: 'failed',
-        failure_reason:
-          transferData?.data
-            ?.reason ||
-          'Paystack transfer failed',
-      }
+      updates
     )
 
-    return
-  }
-
-  if (
-    transferStatus ===
-    'reversed'
-  ) {
-    await updateVendorPayout(
-      env,
-      payout.id,
-      {
-        status: 'reversed',
-        failure_reason:
-          transferData?.data
-            ?.reason ||
-          'Paystack transfer was reversed',
-      }
+  if (!updateConfirmed) {
+    console.error(
+      `Payout ${payout.id}: Paystack returned transfer status "${transfer.status}", but the database update was not confirmed. The payout must be reconciled before any further action.`
     )
 
     return
   }
 
   console.log(
-    `Payout ${payout.id} remains processing. Paystack status: ${transferStatus}`
+    `Payout ${payout.id}: Paystack transfer status "${transfer.status}" was saved and confirmed.`
   )
 }
 
 // ---------------------------------------------------------
 // AUTOMATED PAYOUT PROCESSOR
 // ---------------------------------------------------------
+// ---------------------------------------------------------
+// CENTRALIZED VENDOR PAYOUT FEE CALCULATION
+// ---------------------------------------------------------
+
+async function calculateConfiguredVendorPayout(
+  env,
+  vendorAmountKobo,
+  transactionFeeKobo
+) {
+  if (
+    !Number.isSafeInteger(vendorAmountKobo) ||
+    vendorAmountKobo <= 0 ||
+    !Number.isSafeInteger(transactionFeeKobo) ||
+    transactionFeeKobo < 0 ||
+    transactionFeeKobo >= vendorAmountKobo
+  ) {
+    console.error(
+      'Payout fee calculation refused: invalid vendor amount or transaction fee.'
+    );
+    return null;
+  }
+
+  let response;
+  let responseText;
+  let feeRules;
+
+  try {
+    response = await supabaseRequest(
+      env,
+      '/rest/v1/vendor_payout_fee_config?select=fee_key,fee_type,min_transfer_amount_kobo,max_transfer_amount_kobo,amount_kobo,enabled&enabled=eq.true',
+      { method: 'GET' }
+    );
+
+    responseText = await response.text();
+
+    try {
+      feeRules = JSON.parse(responseText);
+    } catch {
+      feeRules = null;
+    }
+  } catch (error) {
+    console.error(
+      'Could not load centralized vendor payout fee rules.',
+      error?.message || error
+    );
+    return null;
+  }
+
+  if (
+    !response.ok ||
+    !Array.isArray(feeRules) ||
+    feeRules.length === 0
+  ) {
+    console.error(
+      'Payout calculation refused: fee configuration could not be loaded.',
+      response?.status,
+      responseText
+    );
+    return null;
+  }
+
+  // Refuse malformed or unsupported fee rules.
+  for (const rule of feeRules) {
+    const validTypes = [
+      'transfer_fee',
+      'stamp_duty',
+      'other_fixed',
+    ];
+
+    const minimum = Number(
+      rule.min_transfer_amount_kobo
+    );
+
+    const amount = Number(rule.amount_kobo);
+
+    const maximum =
+      rule.max_transfer_amount_kobo === null
+        ? null
+        : Number(rule.max_transfer_amount_kobo);
+
+    if (
+      !validTypes.includes(rule.fee_type) ||
+      !Number.isSafeInteger(minimum) ||
+      minimum < 0 ||
+      !Number.isSafeInteger(amount) ||
+      amount < 0 ||
+      (
+        maximum !== null &&
+        (
+          !Number.isSafeInteger(maximum) ||
+          maximum < minimum
+        )
+      )
+    ) {
+      console.error(
+        `Payout calculation refused: invalid fee rule ${rule.fee_key}.`
+      );
+      return null;
+    }
+
+    rule._minimumKobo = minimum;
+    rule._maximumKobo = maximum;
+    rule._amountKobo = amount;
+  }
+
+  function getFeesForAmount(amountKobo) {
+    const matchingRules = feeRules.filter(rule => {
+      return (
+        amountKobo >= rule._minimumKobo &&
+        (
+          rule._maximumKobo === null ||
+          amountKobo <= rule._maximumKobo
+        )
+      );
+    });
+
+    const matchingTransferRules = matchingRules.filter(
+      rule => rule.fee_type === 'transfer_fee'
+    );
+
+    // Every payout must match exactly one transfer-fee band.
+    if (matchingTransferRules.length !== 1) {
+      return null;
+    }
+
+    let totalFeesKobo = 0;
+
+    for (const rule of matchingRules) {
+      if (
+        !Number.isSafeInteger(
+          totalFeesKobo + rule._amountKobo
+        )
+      ) {
+        return null;
+      }
+
+      totalFeesKobo += rule._amountKobo;
+    }
+
+    return totalFeesKobo;
+  }
+
+  // The fee band is based on the final transfer amount.
+  // Recalculate until the amount and its fees agree.
+  let totalTransferFeesKobo = 0;
+
+  for (let iteration = 0; iteration < 20; iteration++) {
+    const proposedPayoutKobo =
+      vendorAmountKobo -
+      transactionFeeKobo -
+      totalTransferFeesKobo;
+
+        if (
+      !Number.isSafeInteger(proposedPayoutKobo) ||
+      proposedPayoutKobo <= 0
+    ) {
+      console.error(
+        'Payout calculation refused: deductions leave no positive amount for the vendor.'
+      );
+      return null;
+    }
+
+    const nextFeesKobo = getFeesForAmount(
+      proposedPayoutKobo
+    );
+
+    if (
+      nextFeesKobo === null ||
+      !Number.isSafeInteger(nextFeesKobo)
+    ) {
+      console.error(
+        `Payout calculation refused: no unambiguous enabled fee rules match ₦${(proposedPayoutKobo / 100).toFixed(2)}.`
+      );
+      return null;
+    }
+
+    if (nextFeesKobo === totalTransferFeesKobo) {
+      return {
+        payoutKobo: proposedPayoutKobo,
+        transferFeeKobo: totalTransferFeesKobo,
+        transactionFeeKobo,
+        vendorAmountKobo,
+      };
+    }
+
+    totalTransferFeesKobo = nextFeesKobo;
+  }
+
+  console.error(
+    'Payout calculation refused: fee calculation did not converge.'
+  );
+
+  return null;
+}
+async function prepareFailedVendorPayoutRetry(
+  env,
+  payout,
+  paymentVerification
+) {
+  if (
+    !payout ||
+    payout.status !== 'failed' ||
+    !payout.paystack_reference ||
+    !payout.transfer_attempted_at
+  ) {
+    return false;
+  }
+
+  if (payout.manual_review_required === true) {
+    console.warn(
+      `Payout ${payout.id}: flagged for manual review. Automatic retry blocked.`
+    );
+    return false;
+  }
+
+  const failureReason =
+    typeof payout.failure_reason === 'string'
+      ? payout.failure_reason
+      : '';
+
+  console.log(
+    `[PAYOUT RETRY DIAGNOSTIC] START payout=${payout.id}; ` +
+    `status=${payout.status}; ` +
+    `amount=₦${Number(payout.payout_amount).toFixed(2)}; ` +
+    `collectionFee=${payout.transaction_fee_amount ?? 'NULL'}; ` +
+    `transferFee=${payout.transfer_fee_amount ?? 'NULL'}; ` +
+    `reference=${payout.paystack_reference}; ` +
+    `attemptedAt=${payout.transfer_attempted_at}; ` +
+    `failure=${failureReason || '(empty)'}`
+  )
+
+  // Do not automatically retry known data or account problems.
+  const permanentFailurePatterns = [
+    /invalid payout amount/i,
+    /recipient.*invalid/i,
+    /invalid recipient/i,
+    /recipient.*inactive/i,
+    /recipient.*not found/i,
+    /account.*not verified/i,
+  ]
+
+  if (
+    permanentFailurePatterns.some(
+      pattern => pattern.test(failureReason)
+    )
+  ) {
+    console.warn(
+      `Payout ${payout.id}: correct the underlying problem before retrying.`
+    )
+    return false
+  }
+
+
+    // A retry must have a complete, reconciled fee breakdown.
+  // Use the transaction fee returned by verified Paystack data.
+  // Calculate transfer fees using the applicable Nigerian pricing.
+  // Never overwrite an existing, valid fee breakdown.
+
+  if (
+    !paymentVerification ||
+    paymentVerification.verified !== true ||
+    !Number.isSafeInteger(paymentVerification.transactionFeeKobo) ||
+    paymentVerification.transactionFeeKobo < 0 ||
+    !Number.isSafeInteger(paymentVerification.vendorAmountKobo) ||
+    paymentVerification.vendorAmountKobo <= 0
+  ) {
+    console.error(
+      `Payout ${payout.id}: verified payment fee or vendor amount is unavailable. Retry refused.`
+    );
+    return false;
+  }
+
+  const retryVendorAmountKobo =
+    paymentVerification.vendorAmountKobo;
+
+  const retryTransactionFeeKobo =
+    paymentVerification.transactionFeeKobo;
+
+  const hasRetryTransactionFee =
+    payout.transaction_fee_amount !== null &&
+    payout.transaction_fee_amount !== undefined;
+
+  const hasRetryTransferFee =
+    payout.transfer_fee_amount !== null &&
+    payout.transfer_fee_amount !== undefined;
+
+  // A partial fee breakdown is unsafe.
+  if (hasRetryTransactionFee !== hasRetryTransferFee) {
+    console.error(
+      `Payout ${payout.id}: incomplete saved fee breakdown. Manual review required.`
+    );
+    return false;
+  }
+
+    let retryPayoutKobo;
+  let retryTransferFeeKobo;
+
+  // Recalculate against the centralized fee configuration.
+  // This is used for both existing and missing fee breakdowns.
+  const retryCalculation =
+    await calculateConfiguredVendorPayout(
+      env,
+      retryVendorAmountKobo,
+      retryTransactionFeeKobo
+    );
+
+  if (!retryCalculation) {
+    console.error(
+      `Payout ${payout.id}: configured fees could not be verified. Retry refused.`
+    );
+    return false;
+  }
+
+  retryPayoutKobo = retryCalculation.payoutKobo;
+  retryTransferFeeKobo =
+    retryCalculation.transferFeeKobo;
+    console.log(
+  `[PAYOUT RETRY DIAGNOSTIC] RECONCILIATION payout=${payout.id}; ` +
+  `savedPayout=₦${Number(payout.payout_amount).toFixed(2)}; ` +
+  `savedCollectionFee=${payout.transaction_fee_amount ?? 'NULL'}; ` +
+  `savedTransferFee=${payout.transfer_fee_amount ?? 'NULL'}; ` +
+  `verifiedVendorShare=₦${(retryVendorAmountKobo / 100).toFixed(2)}; ` +
+  `verifiedCollectionFee=₦${(retryTransactionFeeKobo / 100).toFixed(2)}; ` +
+  `calculatedPayout=₦${(retryPayoutKobo / 100).toFixed(2)}; ` +
+  `calculatedTransferFees=₦${(retryTransferFeeKobo / 100).toFixed(2)}`
+);
+
+  if (hasRetryTransactionFee && hasRetryTransferFee) {
+    const savedTransactionFeeKobo = Math.round(
+      Number(payout.transaction_fee_amount) * 100
+    );
+
+    const savedTransferFeeKobo = Math.round(
+      Number(payout.transfer_fee_amount) * 100
+    );
+
+    const savedPayoutKobo = Math.round(
+      Number(payout.payout_amount) * 100
+    );
+
+    if (
+      !Number.isSafeInteger(savedTransactionFeeKobo) ||
+      !Number.isSafeInteger(savedTransferFeeKobo) ||
+      !Number.isSafeInteger(savedPayoutKobo) ||
+      savedTransactionFeeKobo !== retryTransactionFeeKobo ||
+      savedTransferFeeKobo !== retryTransferFeeKobo ||
+      savedPayoutKobo !== retryPayoutKobo
+    ) {
+      console.error(
+        `Payout ${payout.id}: saved fees do not match the current verified fee calculation. Manual reconciliation required; retry refused.`
+      );
+      return false;
+    }
+  } else {
+    // Missing fees may only be reconstructed when the existing
+    // amount is still the original, unadjusted vendor share.
+    const existingPayoutKobo = Math.round(
+      Number(payout.payout_amount) * 100
+    );
+
+    if (
+      !Number.isSafeInteger(existingPayoutKobo) ||
+      existingPayoutKobo !== retryVendorAmountKobo
+    ) {
+      console.error(
+        `Payout ${payout.id}: missing fees cannot safely be reconstructed from the current payout amount. Manual reconciliation required.`
+      );
+      return false;
+    }
+
+    let feeSaveResponse;
+
+    try {
+      feeSaveResponse = await supabaseRequest(
+        env,
+        `/rest/v1/vendor_payouts?id=eq.${encodeURIComponent(
+          payout.id
+        )}&status=eq.failed&paystack_reference=eq.${encodeURIComponent(
+          payout.paystack_reference
+        )}`,
+        {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Prefer: 'return=representation',
+          },
+          body: JSON.stringify({
+            transaction_fee_amount:
+              retryTransactionFeeKobo / 100,
+            transfer_fee_amount:
+              retryTransferFeeKobo / 100,
+            payout_amount:
+              retryPayoutKobo / 100,
+            updated_at: new Date().toISOString(),
+          }),
+        }
+      );
+    } catch (error) {
+      console.error(
+        `Payout ${payout.id}: could not save retry fee breakdown.`,
+        error?.message || error
+      );
+      return false;
+    }
+
+    if (!feeSaveResponse.ok) {
+      console.error(
+        `Payout ${payout.id}: failed to save retry fee breakdown.`,
+        await feeSaveResponse.text()
+      );
+      return false;
+    }
+
+    let savedFeeRows;
+
+    try {
+      savedFeeRows = await feeSaveResponse.json();
+    } catch {
+      console.error(
+        `Payout ${payout.id}: could not confirm saved retry fees.`
+      );
+      return false;
+    }
+
+    const savedFeeRow =
+      Array.isArray(savedFeeRows) &&
+      savedFeeRows.length === 1
+        ? savedFeeRows[0]
+        : null;
+
+    const savedPayoutKobo =
+      savedFeeRow?.payout_amount == null
+        ? null
+        : Math.round(
+            Number(savedFeeRow.payout_amount) * 100
+          );
+
+    const savedTransactionFeeKobo =
+      savedFeeRow?.transaction_fee_amount == null
+        ? null
+        : Math.round(
+            Number(savedFeeRow.transaction_fee_amount) * 100
+          );
+
+    const savedTransferFeeKobo =
+      savedFeeRow?.transfer_fee_amount == null
+        ? null
+        : Math.round(
+            Number(savedFeeRow.transfer_fee_amount) * 100
+          );
+
+    if (
+      !savedFeeRow ||
+      savedFeeRow.status !== 'failed' ||
+      savedFeeRow.paystack_reference !==
+        payout.paystack_reference ||
+      savedPayoutKobo !== retryPayoutKobo ||
+      savedTransactionFeeKobo !== retryTransactionFeeKobo ||
+      savedTransferFeeKobo !== retryTransferFeeKobo
+    ) {
+      console.error(
+        `Payout ${payout.id}: saved retry fees could not be confirmed. Retry refused.`
+      );
+      return false;
+    }
+
+    payout.payout_amount = savedFeeRow.payout_amount;
+    payout.transaction_fee_amount =
+      savedFeeRow.transaction_fee_amount;
+    payout.transfer_fee_amount =
+      savedFeeRow.transfer_fee_amount;
+
+    console.log(
+      `Payout ${payout.id}: retry fees saved and confirmed. ` +
+      `Collection fee ₦${(retryTransactionFeeKobo / 100).toFixed(2)}, ` +
+      `transfer-related fees ₦${(retryTransferFeeKobo / 100).toFixed(2)}, ` +
+      `vendor payout ₦${(retryPayoutKobo / 100).toFixed(2)}.`
+    );
+  }
+  let previousTransferConfirmedFailed = false;
+  // Confirm the old transfer's final status before authorizing
+  // another attempt. Never retry pending or uncertain transfers.
+  let verificationResponse
+  let verificationData
+
+  try {
+    verificationResponse = await fetch(
+      `https://api.paystack.co/transfer/verify/${encodeURIComponent(
+        payout.paystack_reference
+      )}`,
+      {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${env.PAYSTACK_SECRET_KEY}`,
+        },
+      }
+    )
+
+    verificationData = await verificationResponse.json()
+    console.log(
+      `[PAYOUT RETRY DIAGNOSTIC] PREVIOUS TRANSFER CHECK payout=${payout.id}; ` +
+      `httpStatus=${verificationResponse.status}; ` +
+      `apiStatus=${verificationData?.status ?? 'unknown'}; ` +
+      `apiMessage=${verificationData?.message ?? 'none'}; ` +
+      `returnedReference=${verificationData?.data?.reference ?? 'none'}; ` +
+      `previousTransferStatus=${verificationData?.data?.status ?? 'unknown'}`
+    )
+  } catch (error) {
+    console.error(
+      `Payout ${payout.id}: could not verify the previous attempt.`,
+      error
+    )
+    return false
+  }
+
+  const insufficientBalanceFailure =
+  /insufficient balance|balance is not enough/i.test(
+    failureReason
+  )
+
+if (
+  verificationResponse.ok &&
+  verificationData?.status === true &&
+  verificationData?.data?.reference ===
+    payout.paystack_reference
+) {
+  const previousStatus =
+    verificationData.data.status
+
+  if (previousStatus === 'success') {
+    console.error(
+      `Payout ${payout.id}: previous transfer succeeded. Retry refused.`
+    )
+    return false
+  }
+
+  if (previousStatus === 'reversed') {
+    console.warn(
+      `Payout ${payout.id}: transfer was reversed. Manual review required.`
+    )
+    return false
+  }
+
+  if (previousStatus !== 'failed') {
+  console.log(
+    `Payout ${payout.id}: previous transfer is not confirmed failed. Retry refused.`
+  )
+  return false
+}
+
+previousTransferConfirmedFailed = true;
+} else {
+  if (
+    insufficientBalanceFailure &&
+    verificationResponse.status === 404 &&
+    verificationData?.status === false &&
+    /transfer not found/i.test(
+      String(verificationData?.message || '')
+    )
+  ) {
+    console.warn(
+      `Payout ${payout.id}: Paystack reports insufficient balance and cannot find the previous transfer. Automatic retry remains blocked pending independent confirmation.`
+    )
+  } else {
+  console.warn(
+    `Payout ${payout.id}: previous transfer outcome could not be confirmed. Fee reconciliation may continue, but retry remains blocked.`
+  )
+}
+
+  return false
+}
+// Fee reconciliation is not permission to retry.
+// Only a transfer explicitly verified as failed may proceed.
+if (!previousTransferConfirmedFailed) {
+  console.warn(
+    `Payout ${payout.id}: fee reconciliation finished, but the previous transfer is not confirmed failed. Retry remains blocked.`
+  );
+  return false;
+}
+
+  // For insufficient-balance failures, check the current Paystack
+  // NGN balance before allowing a retry.
+  if (insufficientBalanceFailure) {
+    let balanceResponse
+    let balanceData
+
+    try {
+      balanceResponse = await fetch(
+        'https://api.paystack.co/balance',
+        {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${env.PAYSTACK_SECRET_KEY}`,
+          },
+        }
+      )
+
+      balanceData = await balanceResponse.json()
+    } catch (error) {
+      console.error(
+        `Payout ${payout.id}: Paystack balance check failed.`,
+        error
+      )
+      return false
+    }
+
+    if (
+      !balanceResponse.ok ||
+      balanceData?.status !== true ||
+      !Array.isArray(balanceData?.data)
+    ) {
+      console.error(
+        `Payout ${payout.id}: Paystack balance could not be confirmed.`
+      )
+      return false
+    }
+
+    const ngnBalance = balanceData.data.find(
+      item => item.currency === 'NGN'
+    )
+
+    const availableKobo = Number(ngnBalance?.balance)
+    const payoutAmountKobo = Math.round(
+  Number(payout.payout_amount) * 100
+)
+
+const transferFeeKobo = Math.round(
+  Number(payout.transfer_fee_amount) * 100
+)
+
+const requiredKobo =
+  payoutAmountKobo + transferFeeKobo
+
+if (
+  payout.transfer_fee_amount === null ||
+  payout.transfer_fee_amount === undefined ||
+  payout.transfer_fee_amount === '' ||
+  !Number.isSafeInteger(availableKobo) ||
+  !Number.isSafeInteger(payoutAmountKobo) ||
+  !Number.isSafeInteger(transferFeeKobo) ||
+  payoutAmountKobo <= 0 ||
+  transferFeeKobo < 0 ||
+  !Number.isSafeInteger(requiredKobo) ||
+  availableKobo < requiredKobo
+) {
+  console.log(
+    `Payout ${payout.id}: insufficient available NGN balance, or invalid payout/fee amounts. Retry postponed.`
+  )
+  return false
+}
+  }
+
+  // The database function enforces the retry limit and creates
+  // a fresh transfer reference. It must succeed before processing.
+  let retryResponse
+
+  try {
+    retryResponse = await supabaseRequest(
+      env,
+      '/rest/v1/rpc/prepare_vendor_payout_retry',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          p_payout_id: payout.id,
+          p_expected_reference: payout.paystack_reference,
+          p_confirmed_failure_reason: failureReason,
+        }),
+      }
+    )
+  } catch (error) {
+    console.error(
+      `Payout ${payout.id}: retry authorization failed.`,
+      error
+    )
+    return false
+  }
+
+  if (!retryResponse.ok) {
+    console.error(
+      `Payout ${payout.id}: retry was not authorized by the database.`,
+      await retryResponse.text()
+    )
+    return false
+  }
+
+  let newReference
+
+  try {
+    newReference = await retryResponse.json()
+  } catch {
+    console.error(
+      `Payout ${payout.id}: could not read the new transfer reference.`
+    )
+    return false
+  }
+
+  if (
+    typeof newReference !== 'string' ||
+    !newReference ||
+    newReference === payout.paystack_reference
+  ) {
+    console.error(
+      `Payout ${payout.id}: database did not return a valid new transfer reference.`
+    )
+    return false
+  }
+
+  console.log(
+    `Payout ${payout.id}: retry authorized with a new reference.`
+  )
+
+  return true
+}
 
 async function processPendingVendorPayouts(env) {
   const verifyOnly = env.PAYOUTS_VERIFY_ONLY === 'true'
@@ -1049,206 +2052,535 @@ async function processPendingVendorPayouts(env) {
   }
 
     async function verifyOriginalPayment(payoutId) {
-    const payouts = await readRows(
-      `/rest/v1/vendor_payouts?id=eq.${encodeURIComponent(
-  payoutId
-)}&select=id,vendor_commission_id,payout_amount,status,transaction_fee_amount,transfer_fee_amount&limit=1`
-    )
+  const payouts = await readRows(
+    `/rest/v1/vendor_payouts?id=eq.${encodeURIComponent(
+      payoutId
+    )}&select=id,vendor_commission_id,payout_amount,status,transaction_fee_amount,transfer_fee_amount&limit=1`
+  );
 
-    if (!payouts?.length) {
-      console.error(`Payout ${payoutId}: payout record not found.`)
-      return false
-    }
+  if (!payouts?.length) {
+    console.error(
+      `Payout ${payoutId}: payout record not found.`
+    );
+    return false;
+  }
 
-    const payout = payouts[0]
+  const payout = payouts[0];
 
-    if (!payout.vendor_commission_id) {
-      console.error(`Payout ${payoutId}: commission relationship missing.`)
-      return false
-    }
+  if (!payout.vendor_commission_id) {
+    console.error(
+      `Payout ${payoutId}: commission relationship missing.`
+    );
+    return false;
+  }
 
-    const commissions = await readRows(
-      `/rest/v1/vendor_commissions?id=eq.${encodeURIComponent(
-        payout.vendor_commission_id
-      )}&select=vendor_order_id,payout_method,vendor_amount&limit=1`
-    )
+  const commissions = await readRows(
+    `/rest/v1/vendor_commissions?id=eq.${encodeURIComponent(
+      payout.vendor_commission_id
+    )}&select=vendor_order_id,payout_method,vendor_amount&limit=1`
+  );
 
-    if (!commissions?.length || !commissions[0].vendor_order_id) {
-      console.error(`Payout ${payoutId}: commission could not be verified.`)
-      return false
-    }
+  if (
+    !commissions?.length ||
+    !commissions[0].vendor_order_id
+  ) {
+    console.error(
+      `Payout ${payoutId}: commission could not be verified.`
+    );
+    return false;
+  }
 
-    const commission = commissions[0]
-    const vendorAmountKobo = Math.round(Number(commission.vendor_amount) * 100)
-    const actualPayoutKobo = Math.round(Number(payout.payout_amount) * 100)
+  const commission = commissions[0];
+
+  const vendorAmountKobo = Math.round(
+    Number(commission.vendor_amount) * 100
+  );
+
+  const actualPayoutKobo = Math.round(
+    Number(payout.payout_amount) * 100
+  );
+
+  if (
+    !Number.isSafeInteger(vendorAmountKobo) ||
+    vendorAmountKobo <= 0 ||
+    !Number.isSafeInteger(actualPayoutKobo) ||
+    actualPayoutKobo <= 0
+  ) {
+    console.error(
+      `Payout ${payoutId}: invalid commission or payout amount.`
+    );
+    return false;
+  }
+
+  if (commission.payout_method !== 'transfer') {
+  console.error(
+    `Payout ${payoutId}: commission is not explicitly marked for separate transfer. Split or unknown payout method; retry refused.`
+  );
+  return false;
+}
+
+  const hasTransactionFee =
+    payout.transaction_fee_amount !== null &&
+    payout.transaction_fee_amount !== undefined;
+
+  const hasTransferFee =
+    payout.transfer_fee_amount !== null &&
+    payout.transfer_fee_amount !== undefined;
+
+  if (hasTransactionFee !== hasTransferFee) {
+    console.error(
+      `Payout ${payoutId}: incomplete fee breakdown.`
+    );
+    return false;
+  }
+
+  let savedTransactionFeeKobo = null;
+  let savedTransferFeeKobo = null;
+
+  if (hasTransactionFee && hasTransferFee) {
+    savedTransactionFeeKobo = Math.round(
+      Number(payout.transaction_fee_amount) * 100
+    );
+
+    savedTransferFeeKobo = Math.round(
+      Number(payout.transfer_fee_amount) * 100
+    );
 
     if (
-      !Number.isSafeInteger(vendorAmountKobo) ||
-      vendorAmountKobo <= 0 ||
-      !Number.isSafeInteger(actualPayoutKobo) ||
-      actualPayoutKobo <= 0
+      !Number.isSafeInteger(savedTransactionFeeKobo) ||
+      savedTransactionFeeKobo < 0 ||
+      !Number.isSafeInteger(savedTransferFeeKobo) ||
+      savedTransferFeeKobo < 0
     ) {
-      console.error(`Payout ${payoutId}: invalid commission or payout amount.`)
-      return false
-    }
-
-    if (commission.payout_method === 'split') {
-      console.error(`Payout ${payoutId}: split-payment commission cannot receive a separate transfer.`)
-      return false
-    }
-
-    const hasTransactionFee =
-      payout.transaction_fee_amount !== null &&
-      payout.transaction_fee_amount !== undefined
-
-    const hasTransferFee =
-      payout.transfer_fee_amount !== null &&
-      payout.transfer_fee_amount !== undefined
-
-    // A payout must either have no fee breakdown yet, or have both
-    // fee amounts saved and reconcile exactly to the payout amount.
-    if (hasTransactionFee !== hasTransferFee) {
-      console.error(`Payout ${payoutId}: incomplete fee breakdown.`)
-      return false
-    }
-
-    if (hasTransactionFee && hasTransferFee) {
-      const transactionFeeKobo = Math.round(
-        Number(payout.transaction_fee_amount) * 100
-      )
-      const transferFeeKobo = Math.round(
-        Number(payout.transfer_fee_amount) * 100
-      )
-
-      if (
-        !Number.isSafeInteger(transactionFeeKobo) ||
-        transactionFeeKobo < 0 ||
-        !Number.isSafeInteger(transferFeeKobo) ||
-        transferFeeKobo < 0 ||
-        vendorAmountKobo - transactionFeeKobo - transferFeeKobo !==
-          actualPayoutKobo
-      ) {
-        console.error(`Payout ${payoutId}: saved fees do not reconcile to the payout amount.`)
-        return false
-      }
-    } else if (payout.status === 'processing') {
-      console.error(`Payout ${payoutId}: processing payout has no saved fee breakdown.`)
-      return false
-    } else if (vendorAmountKobo !== actualPayoutKobo) {
-      console.error(`Payout ${payoutId}: unadjusted payout amount does not match the commission.`)
-      return false
-    }
-
-    const vendorOrders = await readRows(
-      `/rest/v1/vendor_orders?id=eq.${encodeURIComponent(
-        commission.vendor_order_id
-      )}&select=order_id&limit=1`
-    )
-
-    if (!vendorOrders?.length || !vendorOrders[0].order_id) {
-      console.error(`Payout ${payoutId}: vendor order could not be verified.`)
-      return false
-    }
-
-    const orders = await readRows(
-      `/rest/v1/orders?id=eq.${encodeURIComponent(
-        vendorOrders[0].order_id
-      )}&select=id,total_amount,payment_reference,payment_status&limit=1`
-    )
-
-    if (!orders?.length) {
-      console.error(`Payout ${payoutId}: parent order not found.`)
-      return false
-    }
-
-    const order = orders[0]
-
-    if (order.payment_status !== 'paid' || !order.payment_reference) {
-      console.error(`Payout ${payoutId}: parent order is not confirmed as paid.`)
-      return false
-    }
-
-    let response
-    let result
-
-    try {
-      response = await fetch(
-        `https://api.paystack.co/transaction/verify/${encodeURIComponent(
-          order.payment_reference
-        )}`,
-        {
-          method: 'GET',
-          headers: {
-            Authorization: `Bearer ${env.PAYSTACK_SECRET_KEY}`,
-          },
-        }
-      )
-
-      result = await response.json()
-    } catch (error) {
-      console.error(`Payout ${payoutId}: Paystack verification request failed.`, error)
-      return false
-    }
-
-    if (!response.ok || result?.status !== true || !result?.data) {
       console.error(
-        `Payout ${payoutId}: Paystack payment verification failed (HTTP ${response.status}).`
-      )
-      return false
+        `Payout ${payoutId}: invalid saved fee amounts.`
+      );
+      return false;
+    }
+  } else {
+    if (payout.status === 'processing') {
+      console.error(
+        `Payout ${payoutId}: processing payout has no saved fee breakdown. Reconciliation required.`
+      );
+      return false;
     }
 
-    const transaction = result.data
-    const expectedAmount = Math.round(Number(order.total_amount) * 100)
-
-    const verifiedSubaccount =
-      typeof transaction.subaccount === 'string'
-        ? transaction.subaccount
-        : transaction.subaccount?.subaccount_code
-
-    if (verifiedSubaccount) {
-      console.error(`Payout ${payoutId}: original payment uses a Paystack subaccount. Separate transfer prohibited.`)
-      return false
-    }
-
-    if (
-      transaction.domain !== 'live' ||
-      transaction.status !== 'success' ||
-      transaction.reference !== order.payment_reference ||
-      transaction.currency !== 'NGN' ||
-      !Number.isSafeInteger(expectedAmount) ||
-      expectedAmount <= 0 ||
-      Number(transaction.amount) !== expectedAmount
-    ) {
-      console.error(`Payout ${payoutId}: original payment failed Live Mode, status, reference, currency, or amount verification.`)
-      return false
-    }
-
-    const transactionFeeKobo = Number(transaction.fees)
-
-    if (
-      transaction.fees === null ||
-      transaction.fees === undefined ||
-      !Number.isSafeInteger(transactionFeeKobo) ||
-      transactionFeeKobo < 0
-    ) {
-      console.error(`Payout ${payoutId}: Paystack did not return a valid transaction fee.`)
-      return false
-    }
-
-    console.log(
-      `Payout ${payoutId}: original payment verified; original transaction fee ₦${(transactionFeeKobo / 100).toFixed(2)}.`
-    )
-
-    return {
-      verified: true,
-      transactionFeeKobo,
-      vendorAmountKobo,
+    if (actualPayoutKobo !== vendorAmountKobo) {
+      console.error(
+        `Payout ${payoutId}: payout without saved fees does not match the original vendor share. Manual reconciliation required.`
+      );
+      return false;
     }
   }
 
+  const vendorOrders = await readRows(
+    `/rest/v1/vendor_orders?id=eq.${encodeURIComponent(
+      commission.vendor_order_id
+    )}&select=order_id&limit=1`
+  );
+
+  if (
+    !vendorOrders?.length ||
+    !vendorOrders[0].order_id
+  ) {
+    console.error(
+      `Payout ${payoutId}: vendor order could not be verified.`
+    );
+    return false;
+  }
+
+  const orders = await readRows(
+    `/rest/v1/orders?id=eq.${encodeURIComponent(
+      vendorOrders[0].order_id
+    )}&select=id,total_amount,payment_reference,payment_status&limit=1`
+  );
+
+  if (!orders?.length) {
+    console.error(
+      `Payout ${payoutId}: parent order not found.`
+    );
+    return false;
+  }
+
+  const order = orders[0];
+
+  if (
+    order.payment_status !== 'paid' ||
+    !order.payment_reference
+  ) {
+    console.error(
+      `Payout ${payoutId}: parent order is not confirmed as paid.`
+    );
+    return false;
+  }
+
+  let response;
+  let result;
+
+  try {
+    response = await fetch(
+      `https://api.paystack.co/transaction/verify/${encodeURIComponent(
+        order.payment_reference
+      )}`,
+      {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${env.PAYSTACK_SECRET_KEY}`,
+        },
+      }
+    );
+
+    const responseText = await response.text();
+
+    try {
+      result = JSON.parse(responseText);
+    } catch {
+      result = null;
+    }
+  } catch (error) {
+    console.error(
+      `Payout ${payoutId}: Paystack verification request failed.`,
+      error?.message || error
+    );
+    return false;
+  }
+
+  if (
+    !response.ok ||
+    result?.status !== true ||
+    !result?.data
+  ) {
+    console.error(
+      `Payout ${payoutId}: Paystack payment verification failed.`,
+      JSON.stringify({
+        httpStatus: response.status,
+        paystackStatus: result?.status ?? null,
+        message:
+          result?.message ??
+          'No Paystack error message returned',
+      })
+    );
+    return false;
+  }
+
+  const transaction = result.data;
+
+  const expectedAmount = Math.round(
+    Number(order.total_amount) * 100
+  );
+
+  const verifiedSubaccount =
+    typeof transaction.subaccount === 'string'
+      ? transaction.subaccount
+      : transaction.subaccount?.subaccount_code;
+
+  if (verifiedSubaccount) {
+    console.error(
+      `Payout ${payoutId}: original payment uses a Paystack subaccount. Separate transfer prohibited.`
+    );
+    return false;
+  }
+
+  if (
+    transaction.domain !== 'live' ||
+    transaction.status !== 'success' ||
+    transaction.reference !== order.payment_reference ||
+    transaction.currency !== 'NGN' ||
+    !Number.isSafeInteger(expectedAmount) ||
+    expectedAmount <= 0 ||
+    Number(transaction.amount) !== expectedAmount
+  ) {
+    console.error(
+      `Payout ${payoutId}: original payment failed Live Mode, status, reference, currency, or amount verification.`
+    );
+    return false;
+  }
+
+  // Use the actual collection fee returned by Paystack.
+  // Never silently replace a missing fee with an estimate.
+  const transactionFeeKobo = Number(transaction.fees);
+
+  if (
+    transaction.fees === null ||
+    transaction.fees === undefined ||
+    !Number.isSafeInteger(transactionFeeKobo) ||
+    transactionFeeKobo < 0
+  ) {
+    console.error(
+      `Payout ${payoutId}: payment is verified, but Paystack did not return a valid transaction fee. Payout held for fee reconciliation.`
+    );
+    return false;
+  }
+
+  if (hasTransactionFee && hasTransferFee) {
+    if (
+      savedTransactionFeeKobo !== transactionFeeKobo ||
+      vendorAmountKobo -
+        transactionFeeKobo -
+        savedTransferFeeKobo !== actualPayoutKobo
+    ) {
+      console.error(
+        `Payout ${payoutId}: saved fees do not reconcile with the verified transaction and vendor payout.`
+      );
+      return false;
+    }
+  }
+
+  console.log(
+    `Payout ${payoutId}: original payment verified; reported collection fee ₦${(transactionFeeKobo / 100).toFixed(2)}.`
+  );
+
+  return {
+    verified: true,
+    transactionFeeKobo,
+    vendorAmountKobo,
+  };
+}
+async function reconcileFailedPayoutFees(env, payout) {
+  if (
+    !payout ||
+    payout.status !== 'failed' ||
+    !payout.id ||
+    !payout.paystack_reference ||
+    !payout.transfer_attempted_at
+  ) {
+    console.error(
+      'Failed-payout fee reconciliation refused: payout is missing required failed-status or transfer-attempt details.'
+    );
+    return false;
+  }
+
+  // Verify the original customer payment independently.
+  const paymentVerification =
+    await verifyOriginalPayment(payout.id);
+
+  if (
+    !paymentVerification ||
+    paymentVerification.verified !== true ||
+    !Number.isSafeInteger(
+      paymentVerification.transactionFeeKobo
+    ) ||
+    paymentVerification.transactionFeeKobo < 0 ||
+    !Number.isSafeInteger(
+      paymentVerification.vendorAmountKobo
+    ) ||
+    paymentVerification.vendorAmountKobo <= 0
+  ) {
+    console.error(
+      `Payout ${payout.id}: original payment or fee data could not be verified. Fee reconciliation stopped.`
+    );
+    return false;
+  }
+
+  const transactionFeeKobo =
+    paymentVerification.transactionFeeKobo;
+
+  const vendorAmountKobo =
+    paymentVerification.vendorAmountKobo;
+
+  const hasTransactionFee =
+    payout.transaction_fee_amount !== null &&
+    payout.transaction_fee_amount !== undefined;
+
+  const hasTransferFee =
+    payout.transfer_fee_amount !== null &&
+    payout.transfer_fee_amount !== undefined;
+
+  // Never repair only half of a fee breakdown.
+  if (hasTransactionFee !== hasTransferFee) {
+    console.error(
+      `Payout ${payout.id}: only one fee field is saved. Manual reconciliation required.`
+    );
+    return false;
+  }
+
+  const calculation =
+    await calculateConfiguredVendorPayout(
+      env,
+      vendorAmountKobo,
+      transactionFeeKobo
+    );
+
+  if (
+    !calculation ||
+    !Number.isSafeInteger(calculation.payoutKobo) ||
+    !Number.isSafeInteger(calculation.transferFeeKobo) ||
+    calculation.payoutKobo <= 0 ||
+    calculation.transferFeeKobo < 0 ||
+    calculation.payoutKobo !==
+      vendorAmountKobo -
+        transactionFeeKobo -
+        calculation.transferFeeKobo
+  ) {
+    console.error(
+      `Payout ${payout.id}: configured fee calculation failed reconciliation. Manual review required.`
+    );
+    return false;
+  }
+
+  const expectedPayoutKobo = calculation.payoutKobo;
+  const expectedTransferFeeKobo =
+    calculation.transferFeeKobo;
+
+  const currentPayoutKobo = Math.round(
+    Number(payout.payout_amount) * 100
+  );
+
+  if (!Number.isSafeInteger(currentPayoutKobo)) {
+    console.error(
+      `Payout ${payout.id}: existing payout amount is invalid. Manual review required.`
+    );
+    return false;
+  }
+
+  // If both fee fields already exist, verify them.
+  // Do not overwrite an existing breakdown.
+  if (hasTransactionFee && hasTransferFee) {
+    const savedTransactionFeeKobo = Math.round(
+      Number(payout.transaction_fee_amount) * 100
+    );
+
+    const savedTransferFeeKobo = Math.round(
+      Number(payout.transfer_fee_amount) * 100
+    );
+
+    if (
+      !Number.isSafeInteger(savedTransactionFeeKobo) ||
+      !Number.isSafeInteger(savedTransferFeeKobo) ||
+      savedTransactionFeeKobo !== transactionFeeKobo ||
+      savedTransferFeeKobo !== expectedTransferFeeKobo ||
+      currentPayoutKobo !== expectedPayoutKobo
+    ) {
+      console.error(
+        `Payout ${payout.id}: saved fee breakdown differs from the verified configured calculation. Manual review required.`
+      );
+      return false;
+    }
+
+    console.log(
+      `Payout ${payout.id}: existing fee breakdown reconciles. No database changes made.`
+    );
+    return true;
+  }
+
+  // Missing fees may only be reconstructed if the payout amount
+  // is still exactly the original vendor share.
+  if (currentPayoutKobo !== vendorAmountKobo) {
+    console.error(
+      `Payout ${payout.id}: missing fees cannot safely be reconstructed because the existing payout amount is not the original vendor share. Manual review required.`
+    );
+    return false;
+  }
+
+  let saveResponse;
+
+  try {
+    saveResponse = await supabaseRequest(
+      env,
+      `/rest/v1/vendor_payouts?id=eq.${encodeURIComponent(
+        payout.id
+      )}&status=eq.failed&paystack_reference=eq.${encodeURIComponent(
+        payout.paystack_reference
+      )}&transaction_fee_amount=is.null&transfer_fee_amount=is.null`,
+      {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Prefer: 'return=representation',
+        },
+        body: JSON.stringify({
+          transaction_fee_amount:
+            transactionFeeKobo / 100,
+          transfer_fee_amount:
+            expectedTransferFeeKobo / 100,
+          payout_amount:
+            expectedPayoutKobo / 100,
+          updated_at: new Date().toISOString(),
+        }),
+      }
+    );
+  } catch (error) {
+    console.error(
+      `Payout ${payout.id}: fee-only reconciliation update failed.`,
+      error?.message || error
+    );
+    return false;
+  }
+
+  if (!saveResponse.ok) {
+    console.error(
+      `Payout ${payout.id}: fee-only reconciliation PATCH failed.`,
+      await saveResponse.text()
+    );
+    return false;
+  }
+
+  let savedRows;
+
+  try {
+    savedRows = await saveResponse.json();
+  } catch {
+    console.error(
+      `Payout ${payout.id}: could not read the fee reconciliation result.`
+    );
+    return false;
+  }
+
+  const savedRow =
+    Array.isArray(savedRows) && savedRows.length === 1
+      ? savedRows[0]
+      : null;
+
+  const savedPayoutKobo =
+    savedRow?.payout_amount == null
+      ? null
+      : Math.round(Number(savedRow.payout_amount) * 100);
+
+  const savedTransactionFeeKobo =
+    savedRow?.transaction_fee_amount == null
+      ? null
+      : Math.round(
+          Number(savedRow.transaction_fee_amount) * 100
+        );
+
+  const savedTransferFeeKobo =
+    savedRow?.transfer_fee_amount == null
+      ? null
+      : Math.round(
+          Number(savedRow.transfer_fee_amount) * 100
+        );
+
+  if (
+    !savedRow ||
+    savedRow.status !== 'failed' ||
+    savedRow.paystack_reference !== payout.paystack_reference ||
+    !Number.isSafeInteger(savedPayoutKobo) ||
+    !Number.isSafeInteger(savedTransactionFeeKobo) ||
+    !Number.isSafeInteger(savedTransferFeeKobo) ||
+    savedPayoutKobo !== expectedPayoutKobo ||
+    savedTransactionFeeKobo !== transactionFeeKobo ||
+    savedTransferFeeKobo !== expectedTransferFeeKobo
+  ) {
+    console.error(
+      `Payout ${payout.id}: saved fee reconciliation could not be confirmed exactly. Manual review required.`
+    );
+    return false;
+  }
+
+  console.log(
+    `Payout ${payout.id}: fee-only reconciliation saved and verified. ` +
+    `Collection fee=₦${(transactionFeeKobo / 100).toFixed(2)}; ` +
+    `transfer fees=₦${(expectedTransferFeeKobo / 100).toFixed(2)}; ` +
+    `calculated payout=₦${(expectedPayoutKobo / 100).toFixed(2)}. ` +
+    `Status and transfer reference were not changed.`
+  );
+
+  return true;
+}
+
   // Load pending payouts without changing their status.
   const pendingPayouts = await readRows(
-    '/rest/v1/vendor_payouts?status=eq.pending&select=id&order=created_at.desc&limit=2'
+    '/rest/v1/vendor_payouts?status=eq.pending&manual_review_required=eq.false&select=id&order=created_at.desc&limit=2'
   )
 
   if (!pendingPayouts) {
@@ -1256,33 +2588,61 @@ async function processPendingVendorPayouts(env) {
     return
   }
 
-  // Verification-only mode: inspect pending payouts only.
-  // Never claim payouts or initiate transfers in this mode.
+
+  // Verification-only mode: inspect pending and failed payouts.
+  // Do not claim payouts, prepare retries, or initiate transfers.
   if (verifyOnly) {
     for (const payout of pendingPayouts) {
       try {
-        const verified = await verifyOriginalPayment(payout.id)
+        const verified = await verifyOriginalPayment(payout.id);
 
         console.log(
-          `Verification-only result for payout ${payout.id}: ${
+          `Verification-only result for pending payout ${payout.id}: ${
             verified?.verified === true
-  ? 'PAYMENT VERIFIED'
-  : 'NOT VERIFIED'
+              ? 'PAYMENT VERIFIED'
+              : 'NOT VERIFIED'
           }`
-        )
+        );
       } catch (error) {
         console.error(
-          `Verification-only check failed for payout ${payout.id}:`,
+          `Verification-only check failed for pending payout ${payout.id}:`,
           error
-        )
+        );
       }
     }
 
-    console.log(
-      'Verification-only run finished. No payouts were claimed or transferred.'
-    )
-    return
+    const failedPayouts = await readRows(
+  '/rest/v1/vendor_payouts?status=eq.failed&manual_review_required=eq.false&paystack_reference=not.is.null&transfer_attempted_at=not.is.null&select=id,payout_amount,transaction_fee_amount,transfer_fee_amount,paystack_reference,status,transfer_attempted_at,failure_reason&order=updated_at.asc&limit=10'
+);
+
+if (failedPayouts) {
+  for (const payout of failedPayouts) {
+    try {
+      console.log(
+        `Verification-only failed payout review: ${payout.id}; ` +
+        `reference=${payout.paystack_reference}; ` +
+        `amount=₦${payout.payout_amount}; ` +
+        `collectionFee=${payout.transaction_fee_amount ?? 'NULL'}; ` +
+        `transferFee=${payout.transfer_fee_amount ?? 'NULL'}; ` +
+        `failure=${payout.failure_reason}`
+      );
+
+      await reconcileFailedPayoutFees(env, payout);
+    } catch (error) {
+      console.error(
+        `Verification-only fee reconciliation failed for payout ${payout.id}:`,
+        error?.message || error
+      );
+    }
   }
+}
+
+    console.log(
+      'Verification-only run finished. No payouts were claimed, retried, or transferred.'
+    );
+    return;
+  }
+
 
   // Normal mode: verify the original payment, calculate all fees,
   // save the adjusted payout, and only then claim it.
@@ -1307,12 +2667,11 @@ async function processPendingVendorPayouts(env) {
       const vendorAmountKobo =
         paymentVerification.vendorAmountKobo
 
-      if (
+            if (
         !Number.isSafeInteger(transactionFeeKobo) ||
         transactionFeeKobo < 0 ||
         !Number.isSafeInteger(vendorAmountKobo) ||
-        vendorAmountKobo <= 0 ||
-        transactionFeeKobo >= vendorAmountKobo
+        vendorAmountKobo <= 0
       ) {
         console.error(
           `Payout ${payout.id}: invalid transaction fee or vendor amount.`
@@ -1320,131 +2679,46 @@ async function processPendingVendorPayouts(env) {
         continue
       }
 
-      // Paystack's published Nigerian transfer pricing.
-      // Amounts are in kobo. The existing transactionFeeKobo
-      // and vendorAmountKobo variables are declared above.
+            // Calculate the vendor payout using the actual verified
+      // Paystack collection fee and centralized transfer fee rules.
+      const payoutCalculation =
+        await calculateConfiguredVendorPayout(
+          env,
+          vendorAmountKobo,
+          transactionFeeKobo
+        );
+        console.log(
+  `[PAYOUT FEE CALCULATION] payout=${payout.id}; ` +
+  `vendorAmount=₦${(vendorAmountKobo / 100).toFixed(2)}; ` +
+  `collectionFee=₦${(transactionFeeKobo / 100).toFixed(2)}; ` +
+  `calculationSucceeded=${Boolean(payoutCalculation)}; ` +
+  `calculatedPayout=₦${payoutCalculation ? (payoutCalculation.payoutKobo / 100).toFixed(2) : 'N/A'}; ` +
+  `transferFees=₦${payoutCalculation ? (payoutCalculation.transferFeeKobo / 100).toFixed(2) : 'N/A'}`
+);
 
-      if (
-        !Number.isSafeInteger(transactionFeeKobo) ||
-        transactionFeeKobo < 0 ||
-        !Number.isSafeInteger(vendorAmountKobo) ||
-        vendorAmountKobo <= 0 ||
-        transactionFeeKobo >= vendorAmountKobo
-      ) {
+      if (!payoutCalculation) {
         console.error(
-          `Payout ${payout.id}: invalid collection fee or vendor amount. No payout claimed.`
-        )
-        continue
+          `Payout ${payout.id}: configured fees could not be verified. No payout claimed.`
+        );
+        continue;
       }
 
-      function getPaystackTransferFeeKobo(amountKobo) {
-  if (
-    !Number.isSafeInteger(amountKobo) ||
-    amountKobo <= 0
-  ) {
-    return null
-  }
+      const adjustedPayoutKobo =
+        payoutCalculation.payoutKobo;
 
-  // ₦5,000 and below: ₦10
-  if (amountKobo <= 500000) {
-    return 1000
-  }
-
-  // Above ₦5,000 and up to ₦50,000: ₦25
-  if (amountKobo <= 5000000) {
-    return 2500
-  }
-
-  // Above ₦50,000: ₦50
-  return 5000
-}
-
-      // Calculate the transfer fee and any applicable stamp duty
-      // using the proposed final transfer amount.
-      // All amounts are in kobo.
-      let adjustedPayoutKobo = 0
-      let totalTransferFeesKobo = 0
-      let stable = false
-
-      for (let iteration = 0; iteration < 10; iteration++) {
-        const proposedPayoutKobo =
-          vendorAmountKobo -
-          transactionFeeKobo -
-          totalTransferFeesKobo
-
-        if (
-          !Number.isSafeInteger(proposedPayoutKobo) ||
-          proposedPayoutKobo < 5000
-        ) {
-          break
-        }
-
-        const transferFeeKobo =
-          getPaystackTransferFeeKobo(proposedPayoutKobo)
-
-        if (transferFeeKobo === null) {
-          break
-        }
-
-        const stampDutyKobo =
-          proposedPayoutKobo >= 1000000
-            ? 5000
-            : 0
-
-        const nextTotalTransferFeesKobo =
-          transferFeeKobo + stampDutyKobo
-
-        if (
-          nextTotalTransferFeesKobo ===
-          totalTransferFeesKobo
-        ) {
-          adjustedPayoutKobo = proposedPayoutKobo
-          stable = true
-          break
-        }
-
-        totalTransferFeesKobo =
-          nextTotalTransferFeesKobo
-      }
+      const totalTransferFeesKobo =
+        payoutCalculation.transferFeeKobo;
 
       if (
-        !stable ||
-        !Number.isSafeInteger(adjustedPayoutKobo) ||
-        adjustedPayoutKobo < 5000
-      ) {
-        console.error(
-          `Payout ${payout.id}: could not calculate a valid payout and fee combination. No payout claimed.`
-        )
-        continue
-      }
-
-      // Verify that the final amount and fee breakdown agree.
-      const finalTransferFeeKobo =
-        getPaystackTransferFeeKobo(adjustedPayoutKobo)
-
-      const finalStampDutyKobo =
-        adjustedPayoutKobo >= 1000000
-          ? 5000
-          : 0
-
-      const expectedTotalTransferFeesKobo =
-        finalTransferFeeKobo === null
-          ? null
-          : finalTransferFeeKobo + finalStampDutyKobo
-
-      if (
-        expectedTotalTransferFeesKobo === null ||
-        totalTransferFeesKobo !==
-          expectedTotalTransferFeesKobo ||
         adjustedPayoutKobo !==
           vendorAmountKobo -
-          transactionFeeKobo -
-          totalTransferFeesKobo
+            transactionFeeKobo -
+            totalTransferFeesKobo
       ) {
         console.error(
-          `Payout ${payout.id}: final fee consistency check failed. No payout claimed.`
-        )
-        continue
+          `Payout ${payout.id}: final payout reconciliation failed. No payout claimed.`
+        );
+        continue;
       }
 
       const transactionFeeAmount =
@@ -1498,13 +2772,50 @@ async function processPendingVendorPayouts(env) {
         continue
       }
 
+            const savedPayoutRow =
+        Array.isArray(updatedPayoutRows) &&
+        updatedPayoutRows.length === 1
+          ? updatedPayoutRows[0]
+          : null
+
+      const savedPayoutKobo =
+        savedPayoutRow?.payout_amount === null ||
+        savedPayoutRow?.payout_amount === undefined
+          ? null
+          : Math.round(
+              Number(savedPayoutRow.payout_amount) * 100
+            )
+
+      const savedTransactionFeeKobo =
+        savedPayoutRow?.transaction_fee_amount === null ||
+        savedPayoutRow?.transaction_fee_amount === undefined
+          ? null
+          : Math.round(
+              Number(savedPayoutRow.transaction_fee_amount) * 100
+            )
+
+      const savedTransferFeeKobo =
+        savedPayoutRow?.transfer_fee_amount === null ||
+        savedPayoutRow?.transfer_fee_amount === undefined
+          ? null
+          : Math.round(
+              Number(savedPayoutRow.transfer_fee_amount) * 100
+            )
+
       if (
-        !Array.isArray(updatedPayoutRows) ||
-        updatedPayoutRows.length !== 1
+        !savedPayoutRow ||
+        savedPayoutRow.status !== 'pending' ||
+        !Number.isSafeInteger(savedPayoutKobo) ||
+        !Number.isSafeInteger(savedTransactionFeeKobo) ||
+        !Number.isSafeInteger(savedTransferFeeKobo) ||
+        savedPayoutKobo !== adjustedPayoutKobo ||
+        savedTransactionFeeKobo !== transactionFeeKobo ||
+        savedTransferFeeKobo !== totalTransferFeesKobo
       ) {
         console.error(
-          `Payout ${payout.id}: payout was not confirmed as pending during fee update. Not claiming it.`
+          `Payout ${payout.id}: saved payout amount, fee breakdown, or pending status did not match the calculated values. Not claiming payout.`
         )
+
         continue
       }
 
@@ -1562,35 +2873,70 @@ async function processPendingVendorPayouts(env) {
       )
     }
   }
+  // Prepare eligible failed payouts for a controlled retry.
 
-  // Re-fetch processing payouts after claims.
-  const processingPayouts = await readRows(
-    '/rest/v1/vendor_payouts?status=eq.processing&paystack_reference=not.is.null&select=id,vendor_id,payout_amount,paystack_reference,status,transfer_attempted_at&order=created_at.asc&limit=2'
-  )
+const failedPayouts = await readRows(
+  '/rest/v1/vendor_payouts?status=eq.failed&manual_review_required=eq.false&paystack_reference=not.is.null&transfer_attempted_at=not.is.null&select=id,vendor_id,payout_amount,transaction_fee_amount,transfer_fee_amount,paystack_reference,status,transfer_attempted_at,failure_reason,manual_review_required&order=updated_at.asc&limit=10'
+);
 
-  if (!processingPayouts) {
-    console.error('Could not load processing vendor payouts.')
-    return
-  }
-
-  for (const payout of processingPayouts) {
+if (failedPayouts) {
+  for (const payout of failedPayouts) {
     try {
-            const paymentVerification =
-        await verifyOriginalPayment(payout.id)
+      const paymentVerification =
+        await verifyOriginalPayment(payout.id);
+        console.log(
+        `[PAYOUT RETRY DIAGNOSTIC] ORIGINAL PAYMENT CHECK payout=${payout.id}; ` +
+        `verified=${paymentVerification?.verified ?? false}; ` +
+        `transactionFeeKobo=${paymentVerification?.transactionFeeKobo ?? 'NULL'}; ` +
+        `vendorAmountKobo=${paymentVerification?.vendorAmountKobo ?? 'NULL'}; ` +
+        `verificationMessage=${paymentVerification?.message ?? 'No message returned'}`
+      )
 
       if (
         !paymentVerification ||
         paymentVerification.verified !== true
       ) {
         console.log(
-          `Payout ${payout.id} remains unchanged because its original payment or fee breakdown could not be verified.`
-        )
-        continue
+          `Payout ${payout.id}: original payment could not be verified. Retry refused.`
+        );
+        continue;
       }
 
-      await processVendorPayout(env, payout)
+      await prepareFailedVendorPayoutRetry(
+        env,
+        payout,
+        paymentVerification
+      );
     } catch (error) {
-      console.error(`Error processing payout ${payout.id}:`, error)
+      console.error(
+        `Could not prepare retry for payout ${payout.id}:`,
+        error
+      );
+    }
+  }
+}
+
+  // Re-fetch processing payouts after claims.
+  const processingPayouts = await readRows(
+  '/rest/v1/vendor_payouts?status=eq.processing&manual_review_required=eq.false&paystack_reference=not.is.null&select=id,vendor_id,vendor_commission_id,payout_amount,paystack_reference,status,transfer_attempted_at&order=created_at.asc&limit=2'
+)
+
+  if (!processingPayouts) {
+    console.error('Could not load processing vendor payouts.')
+    return
+  }
+
+    for (const payout of processingPayouts) {
+    try {
+      // The original payment and fee breakdown were verified
+      // before the payout was claimed. Reconcile the existing
+      // Paystack transfer before considering any further action.
+      await processVendorPayout(env, payout);
+    } catch (error) {
+      console.error(
+        `Error processing payout ${payout.id}:`,
+        error
+      );
     }
   }
 }
@@ -2693,6 +4039,629 @@ export default {
           'UniAbuja Market API is running',
       })
     }
+    // -------------------------------------------------------
+    // ADMIN: READ PAYOUT ATTEMPT HISTORY
+    // -------------------------------------------------------
+
+    if (
+      url.pathname === '/api/admin/payout-attempts' &&
+      request.method === 'GET'
+    ) {
+      try {
+        const user = await getAuthenticatedUser(
+          request,
+          env
+        )
+
+        if (!user?.id) {
+          return jsonResponse(
+            {
+              success: false,
+              message: 'Unauthorized.',
+            },
+            401
+          )
+        }
+
+        const isAdmin =
+          await isAuthenticatedUserAdmin(
+            request,
+            env
+          )
+
+        if (!isAdmin) {
+          return jsonResponse(
+            {
+              success: false,
+              message: 'Admin access required.',
+            },
+            403
+          )
+        }
+
+        const payoutId =
+          url.searchParams.get('payout_id')
+
+        if (
+          !payoutId ||
+          !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(payoutId)
+        ) {
+          return jsonResponse(
+            {
+              success: false,
+              message: 'A valid payout ID is required.',
+            },
+            400
+          )
+        }
+
+        const response = await supabaseRequest(
+          env,
+          `/rest/v1/vendor_payout_transfer_attempts?payout_id=eq.${encodeURIComponent(payoutId)}&select=id,payout_id,attempt_number,paystack_reference,status,failure_reason,paystack_transfer_status,created_at,submitted_at,completed_at,updated_at&order=attempt_number.asc`
+        )
+
+        if (!response.ok) {
+          throw new Error(
+            'Could not retrieve payout attempt history.'
+          )
+        }
+
+        const attempts = await response.json()
+
+        return jsonResponse({
+          success: true,
+          attempts,
+        })
+      } catch (error) {
+        console.error(
+          'Admin payout history error:',
+          error
+        )
+
+        return jsonResponse(
+          {
+            success: false,
+            message: 'Unable to retrieve payout history.',
+          },
+          500
+        )
+      }
+    }
+    // -------------------------------------------------------
+// ADMIN: MANAGE VENDOR PAYOUT
+// -------------------------------------------------------
+
+if (
+  url.pathname === '/api/admin/payout-action' &&
+  request.method === 'POST'
+) {
+  try {
+    // Authenticate the actual logged-in user.
+    const user = await getAuthenticatedUser(
+      request,
+      env
+    )
+
+    if (!user?.id) {
+      return jsonResponse(
+        {
+          success: false,
+          message: 'Unauthorized.',
+        },
+        401
+      )
+    }
+
+    // Confirm admin privileges using the user's session.
+    const isAdmin =
+      await isAuthenticatedUserAdmin(
+        request,
+        env
+      )
+
+    if (!isAdmin) {
+      return jsonResponse(
+        {
+          success: false,
+          message: 'Admin access required.',
+        },
+        403
+      )
+    }
+
+    const body = await request.json()
+
+    const {
+      payout_id,
+      action,
+      note,
+      confirmed,
+    } = body || {}
+
+    // Validate payout ID.
+    if (
+      typeof payout_id !== 'string' ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+        payout_id
+      )
+    ) {
+      return jsonResponse(
+        {
+          success: false,
+          message: 'A valid payout ID is required.',
+        },
+        400
+      )
+    }
+
+    // Validate action.
+    const allowedActions = [
+      'mark_paid',
+      'authorize_retry',
+      'keep_under_review',
+      'cancel',
+    ]
+
+    if (!allowedActions.includes(action)) {
+      return jsonResponse(
+        {
+          success: false,
+          message: 'Invalid payout action.',
+        },
+        400
+      )
+    }
+
+    // Require an explanatory note.
+    if (
+      typeof note !== 'string' ||
+      !note.trim() ||
+      note.trim().length > 2000
+    ) {
+      return jsonResponse(
+        {
+          success: false,
+          message: 'A valid admin note is required.',
+        },
+        400
+      )
+    }
+
+    // Mark Paid and Cancel require explicit confirmation.
+    if (
+      ['mark_paid', 'cancel'].includes(action) &&
+      confirmed !== true
+    ) {
+      return jsonResponse(
+        {
+          success: false,
+          message: 'Explicit confirmation is required.',
+        },
+        400
+      )
+    }
+
+    // Retrieve the payout before performing any action.
+    const payoutResponse = await supabaseRequest(
+      env,
+      `/rest/v1/vendor_payouts?id=eq.${encodeURIComponent(
+        payout_id
+      )}&select=id,status,paystack_reference,transfer_attempted_at,manual_review_required&limit=1`
+    )
+
+    if (!payoutResponse.ok) {
+      throw new Error('Could not retrieve payout.')
+    }
+
+    const payoutRows = await payoutResponse.json()
+    const payout = payoutRows?.[0]
+
+    if (!payout) {
+      return jsonResponse(
+        {
+          success: false,
+          message: 'Payout not found.',
+        },
+        404
+      )
+    }
+
+    // -----------------------------------------------------
+    // INDEPENDENT PAYSTACK VERIFICATION BEFORE RETRY
+    // -----------------------------------------------------
+
+    let previousTransferConfirmedFailed = false
+
+    if (action === 'authorize_retry') {
+      if (
+        payout.status !== 'failed' ||
+        payout.manual_review_required !== true ||
+        !payout.paystack_reference ||
+        !payout.transfer_attempted_at
+      ) {
+        return jsonResponse(
+          {
+            success: false,
+            message:
+              'This payout does not meet the requirements for retry authorization.',
+          },
+          409
+        )
+      }
+
+      if (
+        !env.PAYSTACK_SECRET_KEY ||
+        !env.PAYSTACK_SECRET_KEY.startsWith('sk_live_')
+      ) {
+        return jsonResponse(
+          {
+            success: false,
+            message:
+              'Paystack Live Mode verification is unavailable. Retry remains blocked.',
+          },
+          503
+        )
+      }
+
+      let verificationResponse
+      let verificationData
+
+      try {
+        verificationResponse = await fetch(
+          `https://api.paystack.co/transfer/verify/${encodeURIComponent(
+            payout.paystack_reference
+          )}`,
+          {
+            method: 'GET',
+            headers: {
+              Authorization:
+                `Bearer ${env.PAYSTACK_SECRET_KEY}`,
+            },
+          }
+        )
+
+        verificationData =
+          await verificationResponse.json()
+      } catch (error) {
+        console.error(
+          'Admin retry Paystack verification failed:',
+          error
+        )
+
+        return jsonResponse(
+          {
+            success: false,
+            message:
+              'Paystack verification could not be completed. Retry remains blocked.',
+          },
+          503
+        )
+      }
+
+      if (
+        !verificationResponse.ok ||
+        verificationData?.status !== true ||
+        verificationData?.data?.reference !==
+          payout.paystack_reference ||
+        verificationData?.data?.status !== 'failed'
+      ) {
+        console.warn(
+          `Admin retry refused for payout ${payout_id}: previous transfer was not independently confirmed failed.`
+        )
+
+        return jsonResponse(
+          {
+            success: false,
+            message:
+              'Paystack has not confirmed that the previous transfer failed. This payout must remain under review.',
+          },
+          409
+        )
+      }
+
+      previousTransferConfirmedFailed = true
+    }
+
+    // -----------------------------------------------------
+    // EXECUTE THE SECURE DATABASE RPC
+    // -----------------------------------------------------
+
+    const rpcResponse = await supabaseRequest(
+      env,
+      '/rest/v1/rpc/admin_manage_vendor_payout',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          p_payout_id: payout_id,
+
+          // Never accept an admin ID supplied by the browser.
+          p_admin_id: user.id,
+
+          p_action: action,
+          p_note: note.trim(),
+
+          p_confirmed:
+            confirmed === true,
+
+          p_previous_transfer_confirmed_failed:
+            previousTransferConfirmedFailed,
+        }),
+      }
+    )
+
+    const rpcText = await rpcResponse.text()
+
+    let rpcData
+
+    try {
+      rpcData = JSON.parse(rpcText)
+    } catch {
+      rpcData = null
+    }
+
+    if (!rpcResponse.ok) {
+      console.error(
+        'Admin payout action database error:',
+        rpcResponse.status,
+        rpcText
+      )
+
+      return jsonResponse(
+        {
+          success: false,
+          message:
+            'The payout action could not be completed. No successful confirmation was received from the database.',
+        },
+        409
+      )
+    }
+
+    return jsonResponse({
+      success: true,
+      message: 'Payout action completed successfully.',
+      result: rpcData,
+    })
+
+  } catch (error) {
+    console.error(
+      'Admin payout action error:',
+      error
+    )
+
+    return jsonResponse(
+      {
+        success: false,
+        message: 'Unable to process the payout action.',
+      },
+      500
+    )
+  }
+}
+        // -------------------------------------------------------
+    // CHAT EMAIL NOTIFICATION
+    // -------------------------------------------------------
+
+    if (
+      url.pathname === '/api/chat/email-notification' &&
+      request.method === 'POST'
+    ) {
+      try {
+        const user = await getAuthenticatedUser(
+          request,
+          env
+        )
+
+        if (!user?.id) {
+          return jsonResponse(
+            {
+              success: false,
+              message: 'Unauthorized',
+            },
+            401
+          )
+        }
+
+        const body = await request.json()
+
+        const {
+          message_id,
+          chat_id,
+        } = body
+
+        if (!message_id || !chat_id) {
+          return jsonResponse(
+            {
+              success: false,
+              message: 'Missing message information.',
+            },
+            400
+          )
+        }
+
+        // Verify the saved message belongs to the sender.
+        const messageResponse = await supabaseRequest(
+          env,
+          `/rest/v1/chat_messages?id=eq.${encodeURIComponent(message_id)}&chat_id=eq.${encodeURIComponent(chat_id)}&sender_id=eq.${encodeURIComponent(user.id)}&select=id,chat_id,sender_id,message&limit=1`
+        )
+
+        if (!messageResponse.ok) {
+          throw new Error('Could not verify chat message.')
+        }
+
+        const messages = await messageResponse.json()
+        const message = messages?.[0]
+
+        if (!message) {
+          return jsonResponse(
+            {
+              success: false,
+              message: 'Message not found or unauthorized.',
+            },
+            403
+          )
+        }
+
+        // Retrieve the chat.
+        const chatResponse = await supabaseRequest(
+          env,
+          `/rest/v1/order_chats?id=eq.${encodeURIComponent(chat_id)}&select=id,vendor_order_id&limit=1`
+        )
+
+        if (!chatResponse.ok) {
+          throw new Error('Could not retrieve chat.')
+        }
+
+        const chats = await chatResponse.json()
+        const chat = chats?.[0]
+
+        if (!chat?.vendor_order_id) {
+          return jsonResponse(
+            {
+              success: false,
+              message: 'Chat not found.',
+            },
+            404
+          )
+        }
+
+        // Retrieve the vendor order.
+        const vendorOrderResponse = await supabaseRequest(
+          env,
+          `/rest/v1/vendor_orders?id=eq.${encodeURIComponent(chat.vendor_order_id)}&select=id,order_id,vendor_id&limit=1`
+        )
+
+        if (!vendorOrderResponse.ok) {
+          throw new Error('Could not retrieve vendor order.')
+        }
+
+        const vendorOrders = await vendorOrderResponse.json()
+        const vendorOrder = vendorOrders?.[0]
+
+        if (!vendorOrder) {
+          return jsonResponse(
+            {
+              success: false,
+              message: 'Vendor order not found.',
+            },
+            404
+          )
+        }
+
+        // Retrieve the customer.
+        const orderResponse = await supabaseRequest(
+          env,
+          `/rest/v1/orders?id=eq.${encodeURIComponent(vendorOrder.order_id)}&select=id,customer_id&limit=1`
+        )
+
+        if (!orderResponse.ok) {
+          throw new Error('Could not retrieve order.')
+        }
+
+        const orders = await orderResponse.json()
+        const order = orders?.[0]
+
+        if (!order) {
+          return jsonResponse(
+            {
+              success: false,
+              message: 'Order not found.',
+            },
+            404
+          )
+        }
+
+        // Only the customer and vendor receive chat emails.
+        let recipientUserId = null
+        let recipientRole = ''
+
+        if (user.id === order.customer_id) {
+          recipientUserId = vendorOrder.vendor_id
+          recipientRole = 'vendor'
+        } else if (user.id === vendorOrder.vendor_id) {
+          recipientUserId = order.customer_id
+          recipientRole = 'customer'
+        } else {
+          return jsonResponse(
+            {
+              success: false,
+              message: 'You are not a participant in this chat.',
+            },
+            403
+          )
+        }
+
+        const recipientEmail = await getUserEmail(
+          env,
+          recipientUserId
+        )
+
+        if (!recipientEmail) {
+          return jsonResponse(
+            {
+              success: false,
+              message: 'Recipient email is unavailable.',
+            },
+            404
+          )
+        }
+
+        // Escape message content before placing it in HTML.
+        const safeMessage = String(message.message || '')
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;')
+          .replace(/\n/g, '<br>')
+
+        const appUrl = getAppUrl(env, request)
+
+        const emailSent = await sendResendEmail(
+          env,
+          {
+            to: recipientEmail,
+            subject: 'New message on UniAbuja Market',
+            idempotencyKey: `chat-message-${message.id}`,
+            html: `
+              <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;line-height:1.6">
+                <h2>New order chat message</h2>
+                <p>You have received a new message from the other ${recipientRole === 'vendor' ? 'order participant' : 'order participant'}.</p>
+                <div style="padding:16px;background:#f4f4f4;border-radius:8px;margin:20px 0">
+                  ${safeMessage}
+                </div>
+                <p>Log in to UniAbuja Market and open the relevant order to reply.</p>
+                <p>
+                  <a href="${appUrl}" style="display:inline-block;padding:12px 20px;background:#166534;color:white;text-decoration:none;border-radius:6px">
+                    Open UniAbuja Market
+                  </a>
+                </p>
+              </div>
+            `,
+          }
+        )
+
+        return jsonResponse({
+          success: emailSent,
+        })
+
+      } catch (error) {
+        console.error(
+          'Chat email notification error:',
+          error.message
+        )
+
+        return jsonResponse(
+          {
+            success: false,
+            message: 'Could not process chat email notification.',
+          },
+          500
+        )
+      }
+    }
 
     // -------------------------------------------------------
     // PUSH NOTIFICATION WEBHOOK
@@ -3190,24 +5159,25 @@ try {
 
           const verifiedTransaction = splitVerifyData?.data
 
-          if (
+                    if (
             !splitVerifyResponse.ok ||
             !splitVerifyData?.status ||
+            verifiedTransaction?.domain !== 'live' ||
             verifiedTransaction?.status !== 'success' ||
             verifiedTransaction?.reference !== reference ||
             verifiedTransaction?.currency !== 'NGN' ||
             Number(verifiedTransaction?.amount) !== expectedAmount
           ) {
             console.error(
-              `Could not independently verify payment ${reference} before classifying its commission.`
+              `Payment ${reference}: Paystack verification failed or transaction is not Live Mode.`
             )
 
             return jsonResponse(
               {
-                success: false,
-                message: 'Could not verify payment settlement',
-              },
-              500
+                success: true,
+                ignored: true,
+                message: 'Payment is not verified as a Live Mode transaction',
+              }
             )
           }
 
@@ -3377,6 +5347,76 @@ try {
               )
             }
 
+            // -------------------------------------------------
+            // EMAIL VENDOR AFTER SUCCESSFUL CUSTOMER PAYMENT
+            // -------------------------------------------------
+
+            try {
+              const vendorOrder =
+                paidVendorOrders[0]
+
+              const vendorEmail =
+                await getUserEmail(
+                  env,
+                  vendorOrder.vendor_id
+                )
+
+              if (vendorEmail) {
+                const formatNaira = (amount) =>
+                  `₦${Number(amount).toLocaleString('en-NG', {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2,
+                  })}`
+
+                const amountPaid =
+                  Number(order.total_amount)
+
+                const productSubtotal =
+                  Number(vendorOrder.subtotal || 0)
+
+                const deliveryFee =
+                  Math.max(
+                    0,
+                    amountPaid - productSubtotal
+                  )
+
+                await sendResendEmail(
+                  env,
+                  {
+                    to: vendorEmail,
+                    subject: 'Payment received for your UniAbuja Market order',
+                    idempotencyKey: `order-payment-${order.id}`,
+                    html: `
+                      <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;color:#222;">
+                        <h2>Payment received!</h2>
+                        <p>Good news! A customer has successfully paid for an order from your store.</p>
+                        <p><strong>Order reference:</strong> ${String(reference).replace(/[&<>"']/g, '')}</p>
+                        <p><strong>Product subtotal:</strong> ${formatNaira(productSubtotal)}</p>
+                        <p><strong>Delivery fee:</strong> ${formatNaira(deliveryFee)}</p>
+                        <p><strong>Total paid by customer:</strong> ${formatNaira(amountPaid)}</p>
+                        <p>Please log in to UniAbuja Market to view and process the order.</p>
+                        <p>
+                          <a href="${getAppUrl(env, request)}"
+                             style="display:inline-block;padding:12px 20px;background:#16a34a;color:white;text-decoration:none;border-radius:6px;">
+                            Open UniAbuja Market
+                          </a>
+                        </p>
+                      </div>
+                    `,
+                  }
+                )
+              } else {
+                console.warn(
+                  `No email address found for vendor ${vendorOrder.vendor_id}.`
+                )
+              }
+            } catch (emailError) {
+              console.error(
+                `Vendor payment email failed for order ${order.id}:`,
+                emailError
+              )
+            }
+
             const orderItemsResponse =
               await supabaseRequest(
                 env,
@@ -3543,126 +5583,226 @@ try {
           })
         }
 
-        const payout =
-          payouts[0]
 
-        if (
-          payout.status ===
-          'paid'
-        ) {
+        const payout = payouts[0]
+
+        const targetStatusByEvent = {
+          'transfer.success': 'paid',
+          'transfer.failed': 'failed',
+          'transfer.reversed': 'reversed',
+        }
+
+        const targetStatus =
+          targetStatusByEvent[eventName]
+
+        const currentStatus = payout.status
+
+        if (currentStatus === targetStatus) {
           return jsonResponse({
             success: true,
-            already_processed:
-              true,
+            already_processed: true,
+          })
+        }
+
+        // Never let a delayed failure overwrite a paid or reversed payout.
+        if (
+          eventName === 'transfer.failed' &&
+          ['paid', 'reversed'].includes(currentStatus)
+        ) {
+          console.warn(
+            `Ignoring transfer.failed for payout ${payout.id}; current status is ${currentStatus}.`
+          )
+
+          return jsonResponse({
+            success: true,
+            ignored: true,
+          })
+        }
+
+        // A late success after failure needs reconciliation.
+        if (
+          eventName === 'transfer.success' &&
+          currentStatus === 'failed'
+        ) {
+          console.error(
+            `Payout ${payout.id} has a conflicting late success event. Reconciliation is required.`
+          )
+
+          return jsonResponse({
+            success: true,
+            ignored: true,
+            reconciliation_required: true,
+          })
+        }
+
+        const allowedCurrentStatuses = {
+          'transfer.success': ['processing', 'pending'],
+          'transfer.failed': ['processing', 'pending'],
+          'transfer.reversed': [
+            'processing',
+            'pending',
+            'paid',
+            'failed',
+          ],
+        }
+
+        if (
+          !allowedCurrentStatuses[eventName]?.includes(
+            currentStatus
+          )
+        ) {
+          console.warn(
+            `Ignoring ${eventName} for payout ${payout.id}; current status is ${currentStatus}.`
+          )
+
+          return jsonResponse({
+            success: true,
+            ignored: true,
+          })
+        }
+
+        const payoutUpdates = {
+          status: targetStatus,
+        }
+
+        if (targetStatus === 'paid') {
+          payoutUpdates.paid_at = new Date().toISOString()
+          payoutUpdates.failure_reason = null
+        } else {
+          payoutUpdates.failure_reason =
+            transfer?.reason ||
+            (
+              targetStatus === 'reversed'
+                ? 'Paystack transfer was reversed'
+                : 'Paystack transfer failed'
+            )
+        }
+
+        const updateConfirmed =
+          await updateVendorPayout(
+            env,
+            payout.id,
+            payoutUpdates
+          )
+
+        if (updateConfirmed) {
+          return jsonResponse({
+            success: true,
+          })
+        }
+
+        // Re-read the row in case another webhook updated it concurrently.
+        let latestResponse
+
+        try {
+          latestResponse = await supabaseRequest(
+            env,
+            `/rest/v1/vendor_payouts?id=eq.${encodeURIComponent(
+              payout.id
+            )}&select=id,status&limit=1`,
+            {
+              method: 'GET',
+            }
+          )
+        } catch (error) {
+          console.error(
+            `Could not verify payout ${payout.id} after its status update failed.`,
+            error
+          )
+
+          return jsonResponse(
+            {
+              success: false,
+              message: 'Could not verify payout status update',
+            },
+            500
+          )
+        }
+
+        if (!latestResponse.ok) {
+          console.error(
+            `Could not re-read payout ${payout.id}:`,
+            await latestResponse.text()
+          )
+
+          return jsonResponse(
+            {
+              success: false,
+              message: 'Could not verify payout status update',
+            },
+            500
+          )
+        }
+
+        let latestPayouts
+
+        try {
+          latestPayouts = await latestResponse.json()
+        } catch (error) {
+          console.error(
+            `Invalid payout status response for ${payout.id}.`,
+            error
+          )
+
+          return jsonResponse(
+            {
+              success: false,
+              message: 'Could not verify payout status update',
+            },
+            500
+          )
+        }
+
+        const latestStatus =
+          Array.isArray(latestPayouts) &&
+          latestPayouts.length === 1
+            ? latestPayouts[0].status
+            : null
+
+        if (latestStatus === targetStatus) {
+          return jsonResponse({
+            success: true,
+            already_processed: true,
           })
         }
 
         if (
-          payout.status ===
-          'reversed'
+          eventName === 'transfer.failed' &&
+          ['paid', 'reversed'].includes(latestStatus)
         ) {
           return jsonResponse({
             success: true,
-            already_processed:
-              true,
+            ignored: true,
           })
         }
 
         if (
-          eventName ===
-          'transfer.success'
+          eventName === 'transfer.success' &&
+          latestStatus === 'failed'
         ) {
-          if (
-            ![
-              'processing',
-              'pending',
-            ].includes(
-              payout.status
-            )
-          ) {
-            return jsonResponse({
-              success: true,
-              ignored: true,
-            })
-          }
-
-          await updateVendorPayout(
-            env,
-            payout.id,
-            {
-              status: 'paid',
-              paid_at:
-                new Date().toISOString(),
-              failure_reason:
-                null,
-            }
+          console.error(
+            `Payout ${payout.id} remains failed despite a success event. Reconciliation is required.`
           )
+
+          return jsonResponse({
+            success: true,
+            ignored: true,
+            reconciliation_required: true,
+          })
         }
 
-        if (
-          eventName ===
-          'transfer.failed'
-        ) {
-          if (
-            ![
-              'processing',
-              'pending',
-            ].includes(
-              payout.status
-            )
-          ) {
-            return jsonResponse({
-              success: true,
-              ignored: true,
-            })
-          }
+        console.error(
+          `Payout ${payout.id}: webhook status "${targetStatus}" was not confirmed. Current database status: ${latestStatus || 'unknown'}.`
+        )
 
-          await updateVendorPayout(
-            env,
-            payout.id,
-            {
-              status: 'failed',
-              failure_reason:
-                transfer?.reason ||
-                'Paystack transfer failed',
-            }
-          )
-        }
+        return jsonResponse(
+          {
+            success: false,
+            message: 'Payout status update was not confirmed',
+          },
+          500
+        )
 
-        if (
-          eventName ===
-          'transfer.reversed'
-        ) {
-          if (
-            ![
-              'processing',
-              'pending',
-              'paid',
-            ].includes(
-              payout.status
-            )
-          ) {
-            return jsonResponse({
-              success: true,
-              ignored: true,
-            })
-          }
-
-          await updateVendorPayout(
-            env,
-            payout.id,
-            {
-              status: 'reversed',
-              failure_reason:
-                transfer?.reason ||
-                'Paystack transfer was reversed',
-            }
-          )
-        }
-
-        return jsonResponse({
-          success: true,
-        })
       } catch (error) {
         console.error(
           'Paystack webhook error:',
@@ -5298,12 +7438,14 @@ console.log(
                 const transaction =
           verifyData.data
 
-        if (
+                if (
+          transaction?.domain !== 'live' ||
+          transaction?.status !== 'success' ||
           transaction?.reference !== reference ||
           transaction?.currency !== 'NGN'
         ) {
           console.error(
-            'Customer payment callback reference or currency mismatch.'
+            'Customer payment callback rejected: transaction is not verified as Live Mode.'
           )
 
           return Response.redirect(
