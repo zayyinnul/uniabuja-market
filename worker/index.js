@@ -4832,6 +4832,51 @@ if (
             env,
             notification
           )
+          // Send an email when a vendor payout enters Manual Review.
+if (
+  notification.type ===
+  'payout_manual_review'
+) {
+  const safeMessage = String(
+    notification.message ||
+    'A vendor payout requires administrative attention.'
+  )
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+
+  const emailSent =
+    await sendResendEmail(
+      env,
+      {
+        to: 'uniabujamarkets@gmail.com',
+        subject:
+          'Action required: Vendor payout requires review',
+        idempotencyKey:
+          `payout-manual-review-${notification.id}`,
+        html: `
+          <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;line-height:1.6">
+            <h2>Vendor payout requires manual review</h2>
+            <p>${safeMessage}</p>
+            <p>Please sign in to UniAbuja Market and open the Admin Dashboard to review this payout.</p>
+            <p>
+              <a href="${getAppUrl(env, request)}">
+                Open UniAbuja Market
+              </a>
+            </p>
+          </div>
+        `,
+      }
+    )
+
+  if (!emailSent) {
+    console.error(
+      'Admin payout manual-review email could not be sent.'
+    )
+  }
+}
 
         return jsonResponse({
           success: true,

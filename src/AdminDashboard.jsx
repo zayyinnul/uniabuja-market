@@ -259,7 +259,7 @@ const handlePayoutAction = async (payout, action) => {
       ] = await Promise.all([
         supabase
           .from('profiles')
-          .select('id, full_name, role, created_at')
+.select('id, full_name, phone, role, created_at')
           .order('created_at', {
             ascending: false,
           }),
@@ -333,13 +333,15 @@ const handlePayoutAction = async (payout, action) => {
     subtotal
   ),
   customer_order:orders!vendor_payouts_order_id_fkey (
-    id,
-    total_amount,
-    payment_status,
-    payment_reference,
-    paid_at,
-    created_at
-  )
+  id,
+  customer_id,
+  total_amount,
+  status,
+  payment_status,
+  payment_reference,
+  paid_at,
+  created_at
+)
 `)
           .order('created_at', {
             ascending: false,
@@ -3668,8 +3670,14 @@ const handlePayoutAction = async (payout, action) => {
                     )
                     .map((payout) => {
                       const account = payout.payout_account
-                      const vendor = payout.vendor
-                      const customerOrder = payout.customer_order
+const vendor = payout.vendor
+const customerOrder = payout.customer_order
+
+const customer = data.profiles.find(
+  (profile) => profile.id === customerOrder?.customer_id
+)
+
+const vendorOrder = payout.vendor_order
 
                       return (
                         <div
@@ -3751,20 +3759,64 @@ const handlePayoutAction = async (payout, action) => {
                           </div>
 
                           <div style={{ marginTop: '14px' }}>
-                            <strong>Order Details</strong>
+  <strong>Customer Details</strong>
 
-                            <div>
-                              Order: {payout.order_id || '—'}
-                            </div>
+  <div>
+    Name: {customer?.full_name || 'Not available'}
+  </div>
 
-                            <div>
-                              Vendor order: {payout.vendor_order_id || '—'}
-                            </div>
+  <div>
+    Phone: {customer?.phone || 'Not available'}
+  </div>
+</div>
 
-                            <div>
-                              Order payment status: {customerOrder?.payment_status || '—'}
-                            </div>
-                          </div>
+<div style={{ marginTop: '14px' }}>
+  <strong>Order Details</strong>
+
+  <div>
+    Order ID: {customerOrder?.id || payout.order_id || '—'}
+  </div>
+
+  <div>
+    Vendor Order ID: {vendorOrder?.id || payout.vendor_order_id || '—'}
+  </div>
+
+  <div>
+    Order Total: {formatNaira(customerOrder?.total_amount)}
+  </div>
+
+  <div>
+    Vendor Order Subtotal: {formatNaira(vendorOrder?.subtotal)}
+  </div>
+
+  <div>
+    Order Status: {customerOrder?.status || '—'}
+  </div>
+
+  <div>
+    Vendor Order Status: {vendorOrder?.status || '—'}
+  </div>
+
+  <div>
+    Payment Status: {customerOrder?.payment_status || '—'}
+  </div>
+
+  <div>
+    Order Date: {
+      customerOrder?.created_at
+        ? new Date(customerOrder.created_at).toLocaleString()
+        : 'Not available'
+    }
+  </div>
+
+  <div>
+    Paid Date: {
+      customerOrder?.paid_at
+        ? new Date(customerOrder.paid_at).toLocaleString()
+        : 'Not recorded'
+    }
+  </div>
+</div>
 
                           <div style={{ marginTop: '14px' }}>
                             <strong>Review Information</strong>
@@ -4137,11 +4189,102 @@ const handlePayoutAction = async (payout, action) => {
                                 </td>
 
                                 <td style={styles.reference}>
-  <div>
-    {payout.paystack_reference
-      ? payout.paystack_reference.slice(0, 24)
-      : '—'}
+  <div style={{ minWidth: '220px', overflowWrap: 'anywhere' }}>
+  <div style={{ marginBottom: '10px' }}>
+    <strong>Vendor Transfer Reference</strong>
+    <div style={{ marginTop: '4px' }}>
+      {payout.paystack_reference || '—'}
+    </div>
+
+    {payout.paystack_reference && (
+      <button
+        type="button"
+        onClick={async () => {
+          try {
+            await navigator.clipboard.writeText(
+              payout.paystack_reference
+            )
+            window.alert('Vendor transfer reference copied.')
+          } catch {
+            window.alert('Unable to copy. Please select and copy the reference.')
+          }
+        }}
+        style={{
+          marginTop: '5px',
+          padding: '5px 9px',
+          fontSize: '12px',
+          cursor: 'pointer',
+        }}
+      >
+        Copy Transfer Reference
+      </button>
+    )}
   </div>
+
+  <div style={{ marginBottom: '10px' }}>
+    <strong>Customer Payment Reference</strong>
+    <div style={{ marginTop: '4px' }}>
+      {payout.customer_order?.payment_reference || '—'}
+    </div>
+  </div>
+
+  <div style={{ marginBottom: '10px' }}>
+    <strong>Vendor</strong>
+    <div>{payout.vendor?.full_name || '—'}</div>
+    <div>{payout.vendor?.phone || 'No phone recorded'}</div>
+  </div>
+
+  <div style={{ marginBottom: '10px' }}>
+    <strong>Customer</strong>
+    <div>
+      {data.profiles.find(
+        (profile) =>
+          profile.id === payout.customer_order?.customer_id
+      )?.full_name || '—'}
+    </div>
+    <div>
+      {data.profiles.find(
+        (profile) =>
+          profile.id === payout.customer_order?.customer_id
+      )?.phone || 'No phone recorded'}
+    </div>
+  </div>
+
+  <div style={{ marginBottom: '10px' }}>
+    <strong>Order Details</strong>
+    <div>
+      Customer Order: {payout.customer_order?.id || payout.order_id || '—'}
+    </div>
+    <div>
+      Vendor Order: {payout.vendor_order?.id || payout.vendor_order_id || '—'}
+    </div>
+    <div>
+      Order Total: {formatNaira(payout.customer_order?.total_amount)}
+    </div>
+    <div>
+      Vendor Subtotal: {formatNaira(payout.vendor_order?.subtotal)}
+    </div>
+    <div>
+      Order Status: {payout.customer_order?.status || '—'}
+    </div>
+    <div>
+      Payment Status: {payout.customer_order?.payment_status || '—'}
+    </div>
+  </div>
+
+  <a
+    href="https://dashboard.paystack.com/"
+    target="_blank"
+    rel="noopener noreferrer"
+    style={{
+      display: 'inline-block',
+      marginTop: '5px',
+      fontSize: '12px',
+    }}
+  >
+    Open Paystack Dashboard
+  </a>
+</div>
 
   <button
     type="button"
@@ -4160,6 +4303,70 @@ const handlePayoutAction = async (payout, action) => {
       ? 'Loading...'
       : 'View Attempts'}
   </button>
+  <div
+  style={{
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: '7px',
+    marginTop: '10px',
+  }}
+>
+  {payout.status !== 'paid' &&
+   payout.status !== 'cancelled' && (
+    <>
+      <button
+        type="button"
+        disabled={payoutActionLoading === payout.id}
+        onClick={() =>
+          handlePayoutAction(payout, 'mark_paid')
+        }
+        style={styles.riderButton}
+      >
+        Mark as Paid
+      </button>
+
+      <button
+        type="button"
+        disabled={payoutActionLoading === payout.id}
+        onClick={() =>
+          handlePayoutAction(payout, 'keep_under_review')
+        }
+        style={styles.riderButton}
+      >
+        Keep Under Review
+      </button>
+
+      <button
+        type="button"
+        disabled={payoutActionLoading === payout.id}
+        onClick={() =>
+          handlePayoutAction(payout, 'cancel')
+        }
+        style={styles.riderButton}
+      >
+        Cancel Payout
+      </button>
+    </>
+  )}
+
+  {payout.status === 'failed' &&
+   payout.manual_review_required === true && (
+    <button
+      type="button"
+      disabled={payoutActionLoading === payout.id}
+      onClick={() =>
+        handlePayoutAction(payout, 'authorize_retry')
+      }
+      style={styles.riderButton}
+    >
+      Authorize Retry
+    </button>
+  )}
+
+  {payoutActionLoading === payout.id && (
+    <span>Processing action...</span>
+  )}
+</div>
 
   {Object.prototype.hasOwnProperty.call(
     payoutAttempts,
