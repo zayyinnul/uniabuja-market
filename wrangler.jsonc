@@ -1,6 +1,8 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "uniabuja-market",
+  "workers_dev": true,
+  "preview_urls": true,
   "compatibility_date": "2026-09-11",
   "compatibility_flags": ["nodejs_compat"],
   "main": "./worker/index.js",
@@ -19,8 +21,15 @@
     "SUPABASE_URL": "https://bkykccypicpnnqcmxmsm.supabase.co",
     "SUPABASE_PUBLISHABLE_KEY": "sb_publishable_RmwbDTWbdYS0gvw_idXp6g_FL_pvNy0",
     "LIVE_PAYOUTS_ENABLED": "false",
-    "PAYSTACK_VENDOR_PLAN_CODE": "PLN_rn6esrf2i9am9n4"
+    "PAYSTACK_VENDOR_PLAN_CODE": "PLN_rn6esrf2i9am9n4",
+    "APP_URL": "https://uniabujamarket.com.ng"
   },
+  "routes": [
+    {
+      "pattern": "uniabujamarket.com.ng",
+      "custom_domain": true
+    }
+  ],
   "triggers": {
     "crons": [
       "*/5 * * * *"

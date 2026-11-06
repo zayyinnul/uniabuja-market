@@ -125,6 +125,50 @@ function Store({ user, store, onBack, onStoreCreated }) {
     }
   }
 
+  // Notify administrators when a new vendor application is submitted.
+  const notifyAdminsOfApplication = async (
+    applicationType,
+    applicationId
+  ) => {
+    try {
+      const { data, error } =
+        await supabase.auth.getSession()
+
+      if (error || !data?.session?.access_token) {
+        throw error || new Error('No active session.')
+      }
+
+      const response = await fetch(
+        'https://uniabuja-market.mammanabideen.workers.dev/api/applications/notify-admin',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${data.session.access_token}`,
+          },
+          body: JSON.stringify({
+            application_type: applicationType,
+            application_id: applicationId,
+          }),
+        }
+      )
+
+      const result = await response.json().catch(() => null)
+
+      if (!response.ok || !result?.success) {
+        console.error(
+          'Admin application alert failed:',
+          result
+        )
+      }
+    } catch (error) {
+      console.error(
+        'Admin application alert error:',
+        error
+      )
+    }
+  }
+
   const handleSubmit = async (e) => {
     e.preventDefault()
 
@@ -208,6 +252,13 @@ function Store({ user, store, onBack, onStoreCreated }) {
         }
 
         savedStore = newStore
+
+        // Send admin notifications for this new application only.
+        // This does not run when an existing store is edited.
+        void notifyAdminsOfApplication(
+          'vendor',
+          newStore.id
+        )
       }
 
       // Save location-based delivery prices

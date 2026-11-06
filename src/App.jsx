@@ -43,6 +43,25 @@ function App() {
   const [showRiderDashboard, setShowRiderDashboard] = useState(false)
   const [passwordRecovery, setPasswordRecovery] = useState(false)
 
+  // Read application details from the email link.
+  const [applicationLink] = useState(() => {
+    const params = new URLSearchParams(window.location.search)
+    const type = params.get('application')
+    const id = params.get('id')
+
+    if (
+      (type === 'rider' || type === 'vendor') &&
+      id
+    ) {
+      return { type, id }
+    }
+
+    return null
+  })
+
+  const [adminCheckComplete, setAdminCheckComplete] = useState(false)
+  const [applicationRedirectHandled, setApplicationRedirectHandled] = useState(false)
+
   const [user, setUser] = useState(null)
   const [store, setStore] = useState(null)
   const [isAdmin, setIsAdmin] = useState(false)
@@ -180,7 +199,6 @@ function App() {
         return
       }
 
-      // Policy pages manage their own navigation.
       if (POLICY_PATHS.includes(path)) {
         return
       }
@@ -251,6 +269,7 @@ function App() {
 
         if (mounted) {
           setIsAdmin(false)
+          setAdminCheckComplete(true)
         }
 
         return
@@ -260,6 +279,7 @@ function App() {
 
       if (mounted) {
         setIsAdmin(data === true)
+        setAdminCheckComplete(true)
       }
     }
 
@@ -325,6 +345,8 @@ function App() {
       setUser(session?.user ?? null)
 
       if (session?.user) {
+        setAdminCheckComplete(false)
+
         await loadStore(session.user.id)
         await loadVendorSubscription(session.user.id)
         await checkAdmin()
@@ -333,6 +355,12 @@ function App() {
         setVendorSubscription(null)
         setIsAdmin(false)
         setSubscriptionLoading(false)
+        setAdminCheckComplete(true)
+
+        // An application email link requires login first.
+        if (applicationLink) {
+          setShowAuth(true)
+        }
       }
 
       if (mounted) {
@@ -343,48 +371,95 @@ function App() {
     loadSession()
 
     const {
-  data: { subscription },
-} = supabase.auth.onAuthStateChange((event, session) => {
-  if (!mounted) return
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((event, session) => {
+      if (!mounted) return
 
-  // Handle password recovery separately.
-  // Do not make database requests inside this callback.
-  if (event === 'PASSWORD_RECOVERY') {
-    setPasswordRecovery(true)
-    setShowAuth(true)
-    setUser(session?.user ?? null)
-    setLoading(false)
-    return
-  }
+      if (event === 'PASSWORD_RECOVERY') {
+        setPasswordRecovery(true)
+        setShowAuth(true)
+        setUser(session?.user ?? null)
+        setLoading(false)
+        return
+      }
 
-  setUser(session?.user ?? null)
+      // Reset the admin check before processing a new login.
+      if (session?.user) {
+        setAdminCheckComplete(false)
+        setLoading(true)
+      }
 
-  // Run database requests outside the auth callback.
-  setTimeout(async () => {
-    if (!mounted) return
+      setUser(session?.user ?? null)
 
-    if (session?.user) {
-      await loadStore(session.user.id)
-      await loadVendorSubscription(session.user.id)
-      await checkAdmin()
-    } else {
-      setStore(null)
-      setVendorSubscription(null)
-      setIsAdmin(false)
-      setSubscriptionLoading(false)
-    }
+      setTimeout(async () => {
+        if (!mounted) return
 
-    if (mounted) {
-      setLoading(false)
-    }
-  }, 0)
-})
+        if (session?.user) {
+          await loadStore(session.user.id)
+          await loadVendorSubscription(session.user.id)
+          await checkAdmin()
+        } else {
+          setStore(null)
+          setVendorSubscription(null)
+          setIsAdmin(false)
+          setSubscriptionLoading(false)
+          setAdminCheckComplete(true)
+
+          if (applicationLink) {
+            setShowAuth(true)
+          }
+        }
+
+        if (mounted) {
+          setLoading(false)
+        }
+      }, 0)
+    })
 
     return () => {
       mounted = false
       subscription.unsubscribe()
     }
   }, [])
+
+  /*
+   * ---------------------------------------------------------
+   * APPLICATION EMAIL LINK REDIRECTION
+   * ---------------------------------------------------------
+   */
+
+  useEffect(() => {
+    if (
+      !applicationLink ||
+      !user ||
+      !adminCheckComplete ||
+      loading ||
+      applicationRedirectHandled
+    ) {
+      return
+    }
+
+    setApplicationRedirectHandled(true)
+
+    if (isAdmin) {
+      showView('admin')
+    } else {
+      setShowAuth(false)
+
+      alert(
+        'Access denied. Only authorised administrators can view application details.'
+      )
+
+      showView('home', false)
+    }
+  }, [
+    applicationLink,
+    user,
+    adminCheckComplete,
+    loading,
+    isAdmin,
+    applicationRedirectHandled,
+  ])
 
   /*
    * ---------------------------------------------------------
@@ -624,20 +699,25 @@ function App() {
    */
 
   if (showAuth) {
-  return (
-    <Auth
-      passwordRecovery={passwordRecovery}
-      onBack={goBack}
-      onLogin={() => {
-        goBack()
-      }}
-      onPasswordResetComplete={() => {
-        setPasswordRecovery(false)
-        showView('auth', false)
-      }}
-    />
-  )
-}
+    return (
+      <Auth
+        passwordRecovery={passwordRecovery}
+        onBack={goBack}
+        onLogin={() => {
+          // Application links are redirected after admin verification.
+          if (applicationLink) {
+            return
+          }
+
+          goBack()
+        }}
+        onPasswordResetComplete={() => {
+          setPasswordRecovery(false)
+          showView('auth', false)
+        }}
+      />
+    )
+  }
 
   /*
    * ADMIN DASHBOARD
@@ -648,6 +728,7 @@ function App() {
       <AdminDashboard
         user={user}
         onBack={goBack}
+        applicationLink={applicationLink}
       />
     )
   }

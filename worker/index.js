@@ -4440,6 +4440,420 @@ if (
     )
   }
 }
+    // -------------------------------------------------------
+// NEW RIDER / VENDOR APPLICATION ADMIN NOTIFICATIONS
+// -------------------------------------------------------
+
+if (
+  url.pathname === '/api/applications/notify-admin' &&
+  request.method === 'POST'
+) {
+  try {
+    const user = await getAuthenticatedUser(
+      request,
+      env
+    )
+
+    if (!user?.id) {
+      return jsonResponse(
+        {
+          success: false,
+          message: 'Unauthorized.',
+        },
+        401
+      )
+    }
+
+    const body = await request.json()
+
+    const applicationType = body.application_type
+    const applicationId = body.application_id
+
+    if (
+      !['rider', 'vendor'].includes(applicationType) ||
+      !/^[0-9a-f-]{36}$/i.test(applicationId || '')
+    ) {
+      return jsonResponse(
+        {
+          success: false,
+          message: 'Invalid application information.',
+        },
+        400
+      )
+    }
+
+    // Escape all user-provided content before placing it in HTML.
+    const escapeHtml = (value) =>
+      String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;')
+
+    // Fetch only the authenticated user's pending application.
+    const applicationPath =
+      applicationType === 'rider'
+        ? `/rest/v1/rider_applications?id=eq.${encodeURIComponent(applicationId)}&user_id=eq.${encodeURIComponent(user.id)}&status=eq.pending&select=*`
+        : `/rest/v1/stores?id=eq.${encodeURIComponent(applicationId)}&owner_id=eq.${encodeURIComponent(user.id)}&status=eq.pending&select=*`
+
+    const applicationResponse = await supabaseRequest(
+      env,
+      applicationPath
+    )
+
+    if (!applicationResponse.ok) {
+      throw new Error('Could not retrieve application.')
+    }
+
+    const applicationRows =
+      await applicationResponse.json()
+
+    const application = applicationRows?.[0]
+
+    if (!application) {
+      return jsonResponse(
+        {
+          success: false,
+          message: 'Pending application not found or unauthorized.',
+        },
+        404
+      )
+    }
+
+    // Retrieve administrators.
+    const adminResponse = await supabaseRequest(
+      env,
+      '/rest/v1/profiles?role=eq.admin&select=id,full_name'
+    )
+
+    if (!adminResponse.ok) {
+      throw new Error('Could not retrieve administrators.')
+    }
+
+    const admins = await adminResponse.json()
+
+    if (!admins?.length) {
+      throw new Error('No administrators were found.')
+    }
+
+    const isRider = applicationType === 'rider'
+
+    const notificationType = isRider
+      ? 'rider_application'
+      : 'vendor_application'
+
+    const notificationTitle = isRider
+      ? 'New rider application'
+      : 'New vendor application'
+
+    const applicantName = isRider
+      ? application.full_name
+      : application.store_name
+
+    const applicantPhone = application.phone || 'Not provided'
+
+    const notificationMessage =
+      `A new ${isRider ? 'rider' : 'vendor'} application has been submitted by ${applicantName}. Reference: ${application.id}`
+
+
+        // Permanent application link. Documents remain private
+    // and are opened through fresh signed URLs in Admin Dashboard.
+
+    // Only use a configured application URL.
+    // Never send administrators to the Worker URL by mistake.
+        const appUrl = env.APP_URL
+      ? env.APP_URL.replace(/\/+$/, '')
+      : null
+
+    const applicationUrl = appUrl
+      ? `${appUrl}/?application=${applicationType}&id=${encodeURIComponent(application.id)}`
+      : null
+
+    const applicationDate = new Date(
+      application.created_at || Date.now()
+    ).toLocaleString('en-NG', {
+      timeZone: 'Africa/Lagos',
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    })
+
+    let detailsHtml = ''
+
+    if (isRider) {
+      detailsHtml = `
+        <h3>Rider application details</h3>
+
+        <table style="width:100%;border-collapse:collapse">
+          <tr>
+            <td><strong>Full name</strong></td>
+            <td>${escapeHtml(application.full_name)}</td>
+          </tr>
+
+          <tr>
+            <td><strong>Phone</strong></td>
+            <td>${escapeHtml(application.phone)}</td>
+          </tr>
+
+          <tr>
+            <td><strong>Date of birth</strong></td>
+            <td>${escapeHtml(application.date_of_birth)}</td>
+          </tr>
+
+          <tr>
+            <td><strong>Address</strong></td>
+            <td>${escapeHtml(application.address)}</td>
+          </tr>
+
+          <tr>
+            <td><strong>Student ID number</strong></td>
+            <td>${escapeHtml(application.student_id_number)}</td>
+          </tr>
+
+          <tr>
+            <td><strong>Department</strong></td>
+            <td>${escapeHtml(application.department)}</td>
+          </tr>
+
+          <tr>
+            <td><strong>Level</strong></td>
+            <td>${escapeHtml(application.level)}</td>
+          </tr>
+
+          <tr>
+            <td><strong>Emergency contact</strong></td>
+            <td>${escapeHtml(application.emergency_contact_name)}</td>
+          </tr>
+
+          <tr>
+            <td><strong>Emergency phone</strong></td>
+            <td>${escapeHtml(application.emergency_contact_phone)}</td>
+          </tr>
+
+          <tr>
+            <td><strong>Has vehicle</strong></td>
+            <td>${application.has_vehicle ? 'Yes' : 'No'}</td>
+          </tr>
+        </table>
+
+        <p>
+  Verification documents are stored securely.
+  Open the application in the Admin Dashboard to view them.
+</p>
+      `
+    } else {
+      detailsHtml = `
+        <h3>Vendor application details</h3>
+
+        <table style="width:100%;border-collapse:collapse">
+          <tr>
+            <td><strong>Store name</strong></td>
+            <td>${escapeHtml(application.store_name)}</td>
+          </tr>
+
+          <tr>
+            <td><strong>Owner phone</strong></td>
+            <td>${escapeHtml(application.phone)}</td>
+          </tr>
+
+          <tr>
+            <td><strong>Description</strong></td>
+            <td>${escapeHtml(application.description)}</td>
+          </tr>
+
+          <tr>
+            <td><strong>Location</strong></td>
+            <td>${escapeHtml(application.location)}</td>
+          </tr>
+
+          <tr>
+            <td><strong>Delivery fee</strong></td>
+            <td>₦${escapeHtml(application.delivery_fee ?? 0)}</td>
+          </tr>
+        </table>
+
+        ${
+          application.logo_url
+            ? `<p><a href="${escapeHtml(application.logo_url)}">View store logo</a></p>`
+            : '<p>No store logo was uploaded.</p>'
+        }
+      `
+    }
+
+    let notificationCount = 0
+    let emailCount = 0
+
+    for (const admin of admins) {
+      // Avoid duplicate in-app notifications for the same application.
+      const duplicateResponse = await supabaseRequest(
+        env,
+        `/rest/v1/notifications?user_id=eq.${encodeURIComponent(admin.id)}&type=eq.${notificationType}&message=eq.${encodeURIComponent(notificationMessage)}&select=id&limit=1`
+      )
+
+      if (!duplicateResponse.ok) {
+        console.error(
+          'Application notification duplicate check failed:',
+          await duplicateResponse.text()
+        )
+      } else {
+        const duplicates = await duplicateResponse.json()
+
+        if (!duplicates?.length) {
+          const insertResponse = await supabaseRequest(
+            env,
+            '/rest/v1/notifications',
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Prefer: 'return=minimal',
+              },
+              body: JSON.stringify({
+                user_id: admin.id,
+                type: notificationType,
+                title: notificationTitle,
+                message: notificationMessage,
+                is_read: false,
+              }),
+            }
+          )
+
+          if (insertResponse.ok) {
+            notificationCount++
+          } else {
+            console.error(
+              'Application notification insert failed:',
+              await insertResponse.text()
+            )
+          }
+        } else {
+          notificationCount++
+        }
+      }
+
+      // Send a separate email to each administrator.
+      const adminEmail = await getUserEmail(
+        env,
+        admin.id
+      )
+
+      if (!adminEmail) continue
+
+      const emailSent = await sendResendEmail(
+        env,
+        {
+          to: adminEmail,
+
+          subject: isRider
+            ? `New Rider Application - ${applicantName}`
+            : `New Vendor Application - ${applicantName}`,
+
+          idempotencyKey:
+            `application-${applicationType}-${application.id}-${admin.id}`,
+
+          html: `
+            <div style="font-family:Arial,sans-serif;max-width:650px;margin:auto;line-height:1.7;color:#222">
+
+              <h2 style="color:#166534">
+                New ${isRider ? 'Rider' : 'Vendor'} Application
+              </h2>
+
+              <p>
+                A new application has been submitted on UniAbuja Market
+                and requires your review.
+              </p>
+
+              <div style="padding:15px;background:#f4f4f4;border-radius:8px">
+                <p>
+                  <strong>Application reference:</strong>
+                  ${escapeHtml(application.id)}
+                </p>
+
+                <p>
+                  <strong>Applicant:</strong>
+                  ${escapeHtml(applicantName)}
+                </p>
+
+                <p>
+                  <strong>Phone:</strong>
+                  ${escapeHtml(applicantPhone)}
+                </p>
+
+                <p>
+                  <strong>Submitted:</strong>
+                  ${escapeHtml(applicationDate)}
+                </p>
+
+                <p>
+                  <strong>Status:</strong> Pending review
+                </p>
+              </div>
+
+              ${detailsHtml}
+
+              ${
+                                applicationUrl
+                  ? `
+                    <p style="margin-top:25px">
+                      <a
+                                                href="${escapeHtml(applicationUrl)}"
+                        style="display:inline-block;padding:12px 20px;background:#166534;color:white;text-decoration:none;border-radius:6px"
+                      >
+                        Open UniAbuja Market Admin Dashboard
+                      </a>
+                    </p>
+                  `
+                  : `
+                    <p>
+                      Log in to UniAbuja Market and open your Admin Dashboard
+                      to review this application.
+                    </p>
+                  `
+              }
+
+              <hr style="border:none;border-top:1px solid #ddd;margin-top:25px">
+
+              <p style="font-size:12px;color:#777">
+                This is an administrator-only application notification.
+                Verification documents are linked securely and are not
+                attached to this email.
+              </p>
+
+            </div>
+          `,
+        }
+      )
+
+      if (emailSent) {
+        emailCount++
+      }
+    }
+
+    return jsonResponse({
+      success:
+        notificationCount > 0 || emailCount > 0,
+
+      message: 'Application notification processing completed.',
+
+      notifications_sent: notificationCount,
+      emails_sent: emailCount,
+    })
+
+  } catch (error) {
+    console.error(
+      'Admin application notification error:',
+      error
+    )
+
+    return jsonResponse(
+      {
+        success: false,
+        message: 'Could not process application notifications.',
+      },
+      500
+    )
+  }
+}
         // -------------------------------------------------------
     // CHAT EMAIL NOTIFICATION
     // -------------------------------------------------------

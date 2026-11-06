@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { supabase } from './lib/supabase'
 
-export default function AdminDashboard({ user, onBack }) {
+export default function AdminDashboard({ user, onBack, applicationLink }) {
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [lastUpdated, setLastUpdated] = useState(null)
@@ -1320,6 +1320,43 @@ const handlePayoutAction = async (payout, action) => {
 
       return map
     }, [data.profiles])
+      const linkedApplication = useMemo(() => {
+    if (!applicationLink?.id || !applicationLink?.type) {
+      return null
+    }
+
+    if (applicationLink.type === 'rider') {
+      const application = data.riderApplications.find(
+        (item) => item.id === applicationLink.id
+      )
+
+      return application
+        ? {
+            type: 'rider',
+            application,
+          }
+        : null
+    }
+
+    if (applicationLink.type === 'vendor') {
+      const application = data.stores.find(
+        (item) => item.id === applicationLink.id
+      )
+
+      return application
+        ? {
+            type: 'vendor',
+            application,
+          }
+        : null
+    }
+
+    return null
+  }, [
+    applicationLink,
+    data.riderApplications,
+    data.stores,
+  ])
 
   if (loading) {
     return (
@@ -1455,6 +1492,179 @@ const handlePayoutAction = async (payout, action) => {
             </button>
           </div>
         </header>
+                {applicationLink && (
+          <section
+            style={{
+              ...styles.panel,
+              marginBottom: '24px',
+              border: '2px solid #2563eb',
+            }}
+          >
+            <h2 style={styles.panelTitle}>
+              Linked Application
+            </h2>
+
+            {!linkedApplication ? (
+              <p style={styles.panelSubtitle}>
+                {loading
+                  ? 'Loading application details...'
+                  : 'Application not found. Refresh the dashboard and try again.'}
+              </p>
+            ) : linkedApplication.type === 'rider' ? (
+              (() => {
+                const application =
+                  linkedApplication.application
+
+                const fileUrls =
+                  riderFileUrls[application.id] || {}
+
+                return (
+                  <div>
+                    <h3 style={styles.applicationName}>
+                      {application.full_name}
+                    </h3>
+
+                    <p style={styles.applicationMeta}>
+                      Application type: Rider
+                    </p>
+
+                    <p style={styles.applicationMeta}>
+                      Status: {application.status}
+                    </p>
+
+                    <p style={styles.applicationMeta}>
+                      Phone: {application.phone || '—'}
+                    </p>
+
+                    <p style={styles.applicationMeta}>
+                      Date of birth: {application.date_of_birth || '—'}
+                    </p>
+
+                    <p style={styles.applicationMeta}>
+                      Address: {application.address || '—'}
+                    </p>
+
+                    <p style={styles.applicationMeta}>
+                      Student ID number: {application.student_id_number || '—'}
+                    </p>
+
+                    <p style={styles.applicationMeta}>
+                      Department: {application.department || '—'}
+                    </p>
+
+                    <p style={styles.applicationMeta}>
+                      Level: {application.level || '—'}
+                    </p>
+
+                    <p style={styles.applicationMeta}>
+                      Emergency contact: {application.emergency_contact_name || '—'}
+                    </p>
+
+                    <p style={styles.applicationMeta}>
+                      Emergency phone: {application.emergency_contact_phone || '—'}
+                    </p>
+
+                    <p style={styles.applicationMeta}>
+                      Has vehicle: {application.has_vehicle ? 'Yes' : 'No'}
+                    </p>
+
+                    <p style={styles.applicationMeta}>
+                      Admin note: {application.admin_note || 'None'}
+                    </p>
+
+                    <div style={styles.documentLinks}>
+                      <strong>Verification documents</strong>
+
+                      <div>
+                        {fileUrls.passportPhotoUrl ? (
+                          <a
+                            href={fileUrls.passportPhotoUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            View passport photograph
+                          </a>
+                        ) : (
+                          <p>No passport photograph available.</p>
+                        )}
+                      </div>
+
+                      <div>
+                        {fileUrls.studentIdDocumentUrl ? (
+                          <a
+                            href={fileUrls.studentIdDocumentUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            View student ID document
+                          </a>
+                        ) : (
+                          <p>No student ID document available.</p>
+                        )}
+                      </div>
+                    </div>
+
+                    <p style={styles.applicationMeta}>
+                      Submitted: {new Date(application.created_at).toLocaleString('en-NG')}
+                    </p>
+                  </div>
+                )
+              })()
+            ) : (
+              (() => {
+                const store =
+                  linkedApplication.application
+
+                const applicant =
+                  profilesById.get(store.owner_id)
+
+                return (
+                  <div>
+                    {store.logo_url && (
+                      <img
+                        src={store.logo_url}
+                        alt={store.store_name}
+                        style={styles.storeLogo}
+                      />
+                    )}
+
+                    <h3 style={styles.applicationName}>
+                      {store.store_name}
+                    </h3>
+
+                    <p style={styles.applicationMeta}>
+                      Application type: Vendor
+                    </p>
+
+                    <p style={styles.applicationMeta}>
+                      Status: {store.status}
+                    </p>
+
+                    <p style={styles.applicationMeta}>
+                      Applicant: {applicant?.full_name || 'Unknown'}
+                    </p>
+
+                    <p style={styles.applicationMeta}>
+                      Phone: {store.phone || applicant?.phone || '—'}
+                    </p>
+
+                    <p style={styles.applicationMeta}>
+                      Location: {store.location || '—'}
+                    </p>
+
+                    <p style={styles.applicationMeta}>
+                      Description: {store.description || '—'}
+                    </p>
+
+                    <p style={styles.applicationMeta}>
+                      Submitted: {new Date(store.created_at).toLocaleString('en-NG')}
+                    </p>
+                  </div>
+                )
+              })()
+            )}
+          </section>
+        )}
 
         {error && (
           <div
