@@ -1,7 +1,7 @@
 import webpush from 'web-push'
 
 const VAPID_PUBLIC_KEY =
-  'BKiYiAZbJUhiZjGYq1F8wc4lpYZ2uL_6g4bxuOSXdYGERyaQ3fllqbKDWkivPAamYXXTZriEOE-o23n22i9DqGg'
+  'BNREyZvb-BBYgCN4m3cjDTsvPlo_biStNNCviET_QjWCUqBMfEiGEX5viSpo5WfqZImBTRtwNGvFcCN44leaFs8'
 
 const VAPID_SUBJECT =
   'https://uniabuja-market.mammanabideen.workers.dev'
@@ -63,51 +63,78 @@ async function getAuthenticatedUser(
   env
 ) {
   const authHeader =
-    request.headers.get(
-      'Authorization'
-    )
+    request.headers.get('Authorization')
 
-  if (
-    !authHeader?.startsWith(
-      'Bearer '
+  if (!authHeader?.startsWith('Bearer ')) {
+    console.error(
+      'AUTH CHECK: Missing or invalid Authorization header.'
     )
-  ) {
     return null
   }
 
   const accessToken =
-    authHeader
-      .replace(
-        'Bearer ',
-        ''
-      )
-      .trim()
+    authHeader.slice(7).trim()
 
   if (!accessToken) {
+    console.error(
+      'AUTH CHECK: Bearer token is empty.'
+    )
     return null
   }
 
-  const response =
-    await fetch(
-      `${env.SUPABASE_URL}/auth/v1/user`,
-      {
-        method: 'GET',
-        headers: {
-          apikey:
-            env.SUPABASE_PUBLISHABLE_KEY,
-          Authorization:
-            `Bearer ${accessToken}`,
-        },
-      }
+  if (
+    !env.SUPABASE_URL ||
+    !env.SUPABASE_PUBLISHABLE_KEY
+  ) {
+    console.error(
+      'AUTH CHECK: Supabase URL or publishable key is missing.'
     )
-
-  if (!response.ok) {
     return null
   }
 
   try {
-    return await response.json()
-  } catch {
+    const response = await fetch(
+      `${env.SUPABASE_URL}/auth/v1/user`,
+      {
+        method: 'GET',
+        headers: {
+          apikey: env.SUPABASE_PUBLISHABLE_KEY,
+          Authorization: `Bearer ${accessToken}`,
+        },
+      }
+    )
+
+    if (!response.ok) {
+      const errorBody =
+        await response.text()
+
+      console.error(
+        'AUTH CHECK: Supabase rejected the user token.',
+        {
+          status: response.status,
+          response: errorBody.slice(0, 1000),
+        }
+      )
+
+      return null
+    }
+
+    const user = await response.json()
+
+    if (!user?.id) {
+      console.error(
+        'AUTH CHECK: Supabase returned no user ID.'
+      )
+      return null
+    }
+
+    return user
+
+  } catch (error) {
+    console.error(
+      'AUTH CHECK: Request failed.',
+      error.message
+    )
     return null
   }
 }
@@ -4896,14 +4923,24 @@ if (
         }
 
         // Verify the saved message belongs to the sender.
-        const messageResponse = await supabaseRequest(
-          env,
-          `/rest/v1/chat_messages?id=eq.${encodeURIComponent(message_id)}&chat_id=eq.${encodeURIComponent(chat_id)}&sender_id=eq.${encodeURIComponent(user.id)}&select=id,chat_id,sender_id,message&limit=1`
-        )
+const messageResponse = await supabaseRequest(
+  env,
+  `/rest/v1/chat_messages?id=eq.${encodeURIComponent(message_id)}&chat_id=eq.${encodeURIComponent(chat_id)}&sender_id=eq.${encodeURIComponent(user.id)}&select=id,chat_id,sender_id,message&limit=1`
+)
 
-        if (!messageResponse.ok) {
-          throw new Error('Could not verify chat message.')
-        }
+if (!messageResponse.ok) {
+  const errorBody = await messageResponse.text()
+
+  console.error(
+    'CHAT MESSAGE VERIFICATION FAILED:',
+    {
+      status: messageResponse.status,
+      response: errorBody.slice(0, 1500),
+    }
+  )
+
+  throw new Error('Could not verify chat message.')
+}
 
         const messages = await messageResponse.json()
         const message = messages?.[0]

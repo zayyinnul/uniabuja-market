@@ -24,3 +24,5 @@ dist-ssr
 *.sw?
 .dev.vars
 .wrangler/
+# Local VAPID private key
+.vapid-private-key.tmp

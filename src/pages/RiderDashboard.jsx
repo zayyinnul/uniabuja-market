@@ -17,7 +17,6 @@ export default function RiderDashboard({ user, onBack }) {
   const [department, setDepartment] = useState("");
   const [level, setLevel] = useState("");
   const [passportPhoto, setPassportPhoto] = useState(null);
-  const [studentIdDocument, setStudentIdDocument] = useState(null);
   const [emergencyContactName, setEmergencyContactName] = useState("");
   const [emergencyContactPhone, setEmergencyContactPhone] = useState("");
   const [hasVehicle, setHasVehicle] = useState("");
@@ -523,11 +522,10 @@ export default function RiderDashboard({ user, onBack }) {
       "image/jpeg",
       "image/png",
       "image/webp",
-      "application/pdf",
     ];
 
     if (!allowedTypes.includes(file.type)) {
-      return `${label} must be JPG, PNG, WEBP, or PDF.`;
+      return `${label} must be JPG, PNG, or WEBP.`;
     }
 
     if (file.size > 5 * 1024 * 1024) {
@@ -555,7 +553,8 @@ export default function RiderDashboard({ user, onBack }) {
 
     return path;
   }
-    async function notifyAdminsOfApplication(
+
+  async function notifyAdminsOfApplication(
     applicationType,
     applicationId
   ) {
@@ -661,31 +660,15 @@ export default function RiderDashboard({ user, onBack }) {
       return;
     }
 
-    const idDocumentError = validateApplicationFile(
-      studentIdDocument,
-      "Student ID document"
-    );
-
-    if (idDocumentError) {
-      setMessage(idDocumentError);
-      return;
-    }
-
     setSubmittingApplication(true);
     setMessage("");
 
     let passportPath = null;
-    let studentIdPath = null;
 
     try {
       passportPath = await uploadVerificationFile(
         passportPhoto,
         "passport"
-      );
-
-      studentIdPath = await uploadVerificationFile(
-        studentIdDocument,
-        "student-id"
       );
 
       const { data, error } = await supabase
@@ -700,7 +683,7 @@ export default function RiderDashboard({ user, onBack }) {
           department: department.trim(),
           level: level.trim(),
           passport_photo_path: passportPath,
-          student_id_document_path: studentIdPath,
+          student_id_document_path: null,
           emergency_contact_name:
             emergencyContactName.trim(),
           emergency_contact_phone:
@@ -750,23 +733,22 @@ export default function RiderDashboard({ user, onBack }) {
       }
 
       setApplication(data);
-            void notifyAdminsOfApplication("rider", data.id);
+      void notifyAdminsOfApplication("rider", data.id);
 
       setPassportPhoto(null);
-      setStudentIdDocument(null);
 
       setMessage(
         "Your rider application has been submitted successfully."
       );
     } catch (error) {
       console.error(
-        "Rider verification upload error:",
+        "Rider passport upload error:",
         error
       );
 
       setMessage(
         error?.message ||
-          "Unable to upload your verification documents."
+          "Unable to upload your passport photo."
       );
     }
 
@@ -878,9 +860,9 @@ export default function RiderDashboard({ user, onBack }) {
               <h3>Apply as a Delivery Rider</h3>
 
               <p>
-                Please provide your details and verification
-                documents. An admin will review your application
-                before you can deliver orders.
+                Please provide your details and passport photo.
+                An admin will review your application before
+                you can deliver orders.
               </p>
 
               <div style={{ marginTop: "18px" }}>
@@ -1207,34 +1189,6 @@ export default function RiderDashboard({ user, onBack }) {
 
                 <small>
                   JPG, PNG or WEBP. Maximum 5MB.
-                </small>
-              </div>
-
-              <div style={{ marginTop: "14px" }}>
-                <label
-                  htmlFor="rider-student-document"
-                  style={{
-                    display: "block",
-                    marginBottom: "6px",
-                    fontWeight: "600",
-                  }}
-                >
-                  Student ID / verification document
-                </label>
-
-                <input
-                  id="rider-student-document"
-                  type="file"
-                  accept="image/jpeg,image/png,image/webp,application/pdf"
-                  onChange={(e) =>
-                    setStudentIdDocument(
-                      e.target.files?.[0] || null
-                    )
-                  }
-                />
-
-                <small>
-                  JPG, PNG, WEBP or PDF. Maximum 5MB.
                 </small>
               </div>
 

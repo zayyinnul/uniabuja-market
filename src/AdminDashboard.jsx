@@ -1268,6 +1268,13 @@ const handlePayoutAction = async (payout, action) => {
         ),
       [data.riderApplications]
     )
+    const approvedRiderApplications = useMemo(
+  () =>
+    data.riderApplications.filter(
+      (application) => application.status === 'approved'
+    ),
+  [data.riderApplications]
+)
 
   const pendingVendorApplications =
     useMemo(
@@ -1357,6 +1364,26 @@ const handlePayoutAction = async (payout, action) => {
     data.riderApplications,
     data.stores,
   ])
+  useEffect(() => {
+  if (!applicationLink?.id || loading || !linkedApplication) {
+    return
+  }
+
+  const timer = setTimeout(() => {
+    const target =
+      document.getElementById(
+        `rider-application-${applicationLink.id}`
+      ) ||
+      document.getElementById('rider-records')
+
+    target?.scrollIntoView({
+      behavior: 'smooth',
+      block: 'center',
+    })
+  }, 300)
+
+  return () => clearTimeout(timer)
+}, [applicationLink, loading, linkedApplication, riderFileUrls])
 
   if (loading) {
     return (
@@ -2637,14 +2664,14 @@ const handlePayoutAction = async (payout, action) => {
               </div>
             </section>
 
-            {/* RIDER APPLICATIONS */}
-            <section>
+            {/* RIDER RECORDS */}
+<section id="rider-records">
               <div
                 style={
                   styles.sectionHeading
                 }
               >
-                Rider Applications
+                Rider Records & Applications
               </div>
 
               <div
@@ -2718,13 +2745,10 @@ const handlePayoutAction = async (payout, action) => {
 
                         return (
                           <div
-                            key={
-                              application.id
-                            }
-                            style={
-                              styles.applicationCard
-                            }
-                          >
+  id={`rider-application-${application.id}`}
+  key={application.id}
+  style={styles.applicationCard}
+>
                             <div
                               style={
                                 styles.applicationContent
@@ -3039,14 +3063,11 @@ const handlePayoutAction = async (payout, action) => {
                             ] || {}
 
                           return (
-                            <div
-                              key={
-                                application.id
-                              }
-                              style={
-                                styles.rejectedApplicationCard
-                              }
-                            >
+                           <div
+  id={`rider-application-${application.id}`}
+  key={application.id}
+  style={styles.rejectedApplicationCard}
+>
                               <div
                                 style={
                                   styles.applicationContent
@@ -4331,10 +4352,13 @@ const vendorOrder = payout.vendor_order
                   </p>
                 ) : (
                   <div
-                    style={
-                      styles.tableWrapper
-                    }
-                  >
+  style={{
+    ...styles.tableWrapper,
+    maxHeight: '420px',
+    overflowY: 'auto',
+    overflowX: 'auto',
+  }}
+>
                     <table
                       style={
                         styles.table
@@ -4359,11 +4383,7 @@ const vendorOrder = payout.vendor_order
 
                       <tbody>
                         {data.payouts
-                          .slice(
-                            0,
-                            8
-                          )
-                          .map(
+  .map(
                             (
                               payout
                             ) => (
