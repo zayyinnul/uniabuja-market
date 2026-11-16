@@ -3084,11 +3084,42 @@ async function findVendorSubscriptionByVendorId(
     return null
   }
 
-  return Array.isArray(data) &&
+    return Array.isArray(data) &&
     data.length
     ? data[0]
     : null
 }
+
+async function getVendorSubscriptionSettings(env) {
+  try {
+    const response = await supabaseRequest(
+      env,
+      '/rest/v1/market_subscription_settings?id=eq.1&select=enforcement_paused,automatic_trials_enabled,automatic_grace_enabled&limit=1',
+      { method: 'GET' }
+    )
+
+    if (!response.ok) {
+      console.error(
+        'Could not load vendor subscription settings:',
+        await response.text()
+      )
+      return null
+    }
+
+    const rows = await response.json()
+
+    return Array.isArray(rows) && rows.length === 1
+      ? rows[0]
+      : null
+  } catch (error) {
+    console.error(
+      'Vendor subscription settings request failed:',
+      error
+    )
+    return null
+  }
+}
+
 async function processVendorSubscriptionPayment(
   env,
   payment
@@ -3716,23 +3747,68 @@ async function handleVendorSubscriptionWebhook(
     }
   }
 
-  if (
+      if (
     eventName ===
     'invoice.payment_failed'
   ) {
-    const graceEnd =
-      addDays(
-        currentTime,
-        SUBSCRIPTION_GRACE_DAYS
-      ).toISOString()
+    // A failed renewal must not cancel access that has
+    // already been paid for.
+    const paidPeriodEnd = subscription.current_period_end
+      ? new Date(subscription.current_period_end)
+      : null
+
+    const paidPeriodStillActive =
+      paidPeriodEnd &&
+      !Number.isNaN(paidPeriodEnd.getTime()) &&
+      paidPeriodEnd > currentTime
+
+    if (paidPeriodStillActive) {
+      console.log(
+        `Vendor subscription ${subscription.id} renewal payment failed, but the existing paid period remains active until ${subscription.current_period_end}. No access change made.`
+      )
+
+      return {
+        handled: true,
+        status: subscription.status,
+        paid_period_preserved: true,
+      }
+    }
+
+    // Do not assume grace is disabled when settings
+    // cannot be retrieved.
+    const settings = await getVendorSubscriptionSettings(env)
+
+    if (!settings) {
+      console.error(
+        `Vendor subscription ${subscription.id} was not updated after failed invoice payment because subscription settings could not be loaded.`
+      )
+
+      return {
+        handled: false,
+        reason: 'subscription_settings_unavailable',
+      }
+    }
+
+    const automaticGraceEnabled =
+      settings.automatic_grace_enabled === true
+
+    const graceEnd = automaticGraceEnabled
+      ? addDays(
+          currentTime,
+          SUBSCRIPTION_GRACE_DAYS
+        ).toISOString()
+      : null
+
+    const nextStatus = automaticGraceEnabled
+      ? 'past_due'
+      : 'expired'
 
     await updateVendorSubscription(
       env,
       subscription.id,
       {
-        status: 'past_due',
-        grace_period_ends_at:
-          graceEnd,
+        status: nextStatus,
+        grace_period_ends_at: graceEnd,
         paystack_customer_code:
           customerCode ||
           subscription.paystack_customer_code ||
@@ -3745,12 +3821,12 @@ async function handleVendorSubscriptionWebhook(
     )
 
     console.log(
-      `Vendor subscription ${subscription.id} marked past_due after failed invoice payment.`
+      `Vendor subscription ${subscription.id} marked ${nextStatus} after failed invoice payment. Automatic grace enabled: ${automaticGraceEnabled}.`
     )
 
     return {
       handled: true,
-      status: 'past_due',
+      status: nextStatus,
     }
   }
 
@@ -3849,6 +3925,7 @@ async function handleVendorSubscriptionWebhook(
   }
 }
 
+
 // ---------------------------------------------------------
 // VENDOR SUBSCRIPTION CRON LIFECYCLE
 // ---------------------------------------------------------
@@ -3868,17 +3945,14 @@ async function processVendorSubscriptionLifecycle(
   let subscriptions = null
 
   try {
-    subscriptions =
-      await response.json()
+    subscriptions = await response.json()
   } catch {
     subscriptions = null
   }
 
   if (
     !response.ok ||
-    !Array.isArray(
-      subscriptions
-    )
+    !Array.isArray(subscriptions)
   ) {
     console.error(
       'Could not load vendor subscriptions for lifecycle processing:',
@@ -3888,32 +3962,40 @@ async function processVendorSubscriptionLifecycle(
     return
   }
 
-  const now =
-    new Date()
+  const now = new Date()
 
-  for (
-    const subscription of
-      subscriptions
-  ) {
+  const settings =
+    await getVendorSubscriptionSettings(env)
+
+  // Do not make destructive lifecycle changes if settings
+  // cannot be read. Try again on the next cron execution.
+  if (!settings) {
+    console.error(
+      'Vendor subscription lifecycle skipped because subscription settings could not be loaded.'
+    )
+
+    return
+  }
+
+  const automaticGraceEnabled =
+    settings.automatic_grace_enabled === true
+
+  for (const subscription of subscriptions) {
     try {
+      // EXPIRE TRIALS
       if (
-        subscription.status ===
-        'trialing'
+        subscription.status === 'trialing'
       ) {
         if (
           subscription.trial_ends_at &&
-          new Date(
-            subscription.trial_ends_at
-          ) <= now
+          new Date(subscription.trial_ends_at) <= now
         ) {
           await updateVendorSubscription(
             env,
             subscription.id,
             {
-              status:
-                'expired',
-              grace_period_ends_at:
-                null,
+              status: 'expired',
+              grace_period_ends_at: null,
             }
           )
 
@@ -3925,85 +4007,107 @@ async function processVendorSubscriptionLifecycle(
         continue
       }
 
+      // HANDLE EXPIRED PAID PERIODS
       if (
-        subscription.status ===
-        'active'
+        subscription.status === 'active'
       ) {
         if (
           subscription.current_period_end &&
-          new Date(
-            subscription.current_period_end
-          ) <= now
+          new Date(subscription.current_period_end) <= now
         ) {
+          const nextStatus = automaticGraceEnabled
+            ? 'past_due'
+            : 'expired'
+
+          const graceEnd = automaticGraceEnabled
+            ? addDays(
+                now,
+                SUBSCRIPTION_GRACE_DAYS
+              ).toISOString()
+            : null
+
           await updateVendorSubscription(
             env,
             subscription.id,
             {
-              status:
-                'past_due',
-              grace_period_ends_at:
-                addDays(
-                  now,
-                  SUBSCRIPTION_GRACE_DAYS
-                ).toISOString(),
+              status: nextStatus,
+              grace_period_ends_at: graceEnd,
             }
           )
 
           console.log(
-            `Vendor subscription ${subscription.id} period ended. Grace period started.`
+            `Vendor subscription ${subscription.id} period ended. Status set to ${nextStatus}; automatic grace enabled: ${automaticGraceEnabled}.`
           )
         }
 
         continue
       }
 
+      // HANDLE AUTOMATIC GRACE PERIOD
       if (
-        subscription.status ===
-        'past_due'
+        subscription.status === 'past_due'
+      ) {
+        if (
+          !automaticGraceEnabled ||
+          !subscription.grace_period_ends_at ||
+          new Date(subscription.grace_period_ends_at) <= now
+        ) {
+          await updateVendorSubscription(
+            env,
+            subscription.id,
+            {
+              status: 'expired',
+              grace_period_ends_at: null,
+            }
+          )
+
+          console.log(
+            `Vendor subscription ${subscription.id} automatic grace period expired or disabled.`
+          )
+        }
+
+        continue
+      }
+
+      // HANDLE ADMINISTRATOR-GRANTED GRACE PERIOD
+      if (
+        subscription.status === 'grace_period'
       ) {
         if (
           subscription.grace_period_ends_at &&
-          new Date(
-            subscription.grace_period_ends_at
-          ) <= now
+          new Date(subscription.grace_period_ends_at) <= now
         ) {
           await updateVendorSubscription(
             env,
             subscription.id,
             {
-              status:
-                'expired',
-              grace_period_ends_at:
-                null,
+              status: 'expired',
+              grace_period_ends_at: null,
             }
           )
 
           console.log(
-            `Vendor subscription ${subscription.id} grace period expired.`
+            `Vendor subscription ${subscription.id} administrator-granted grace period expired.`
           )
         }
 
         continue
       }
 
+      // HANDLE CANCELLED SUBSCRIPTIONS
       if (
-        subscription.status ===
-        'cancelled'
+        subscription.status === 'cancelled'
       ) {
         if (
           subscription.current_period_end &&
-          new Date(
-            subscription.current_period_end
-          ) <= now
+          new Date(subscription.current_period_end) <= now
         ) {
           await updateVendorSubscription(
             env,
             subscription.id,
             {
-              status:
-                'expired',
-              grace_period_ends_at:
-                null,
+              status: 'expired',
+              grace_period_ends_at: null,
             }
           )
 
@@ -4020,6 +4124,7 @@ async function processVendorSubscriptionLifecycle(
     }
   }
 }
+
 // ---------------------------------------------------------
 // WORKER
 // ---------------------------------------------------------
@@ -5453,17 +5558,30 @@ if (
                 event
               )
 
-            if (
-              result?.handled
-            ) {
+                        if (result?.handled) {
               return jsonResponse({
                 success: true,
-                subscription:
-                  true,
-                status:
-                  result.status ||
-                  null,
+                subscription: true,
+                status: result.status || null,
               })
+            }
+
+            if (
+              result?.reason ===
+              'subscription_settings_unavailable'
+            ) {
+              console.error(
+                'Vendor subscription webhook was not processed because subscription settings are unavailable. Paystack should retry this event.'
+              )
+
+              return jsonResponse(
+                {
+                  success: false,
+                  message:
+                    'Subscription settings are temporarily unavailable. Please retry the webhook.',
+                },
+                500
+              )
             }
           } catch (subscriptionError) {
             console.error(
@@ -7432,19 +7550,53 @@ try {
         const subscription =
           subscriptions[0]
 
+                const accessCheckResponse = await supabaseRequest(
+          env,
+          '/rest/v1/rpc/vendor_subscription_access_allowed',
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              p_vendor_id: user.id,
+            }),
+          }
+        )
+
+        let accessAllowed = null
+
+        try {
+          accessAllowed = await accessCheckResponse.json()
+        } catch {
+          accessAllowed = null
+        }
+
         if (
-          [
-            'active',
-            'trialing',
-          ].includes(
-            subscription.status
-          )
+          !accessCheckResponse.ok ||
+          typeof accessAllowed !== 'boolean'
         ) {
+          console.error(
+            'Could not verify vendor subscription access before payment initialization:',
+            accessAllowed
+          )
+
           return jsonResponse(
             {
               success: false,
               message:
-                'Your vendor subscription is already active',
+                'Could not verify your current subscription access. Please try again.',
+            },
+            503
+          )
+        }
+
+        if (accessAllowed) {
+          return jsonResponse(
+            {
+              success: false,
+              message:
+                'Your vendor account already has selling access.',
             },
             400
           )

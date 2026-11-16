@@ -11,6 +11,17 @@ export default function AdminDashboard({ user, onBack, applicationLink }) {
   const [riderAction, setRiderAction] = useState(null)
   const [riderFileUrls, setRiderFileUrls] = useState({})
   const [vendorAction, setVendorAction] = useState(null)
+  const [subscriptionSettings, setSubscriptionSettings] = useState({
+    enforcement_paused: false,
+    automatic_trials_enabled: false,
+    automatic_grace_enabled: false,
+  })
+  const [subscriptionSettingsSaving, setSubscriptionSettingsSaving] = useState(false)
+  const [vendorApprovalArrangements, setVendorApprovalArrangements] = useState({})
+  const [vendorArrangementSelections, setVendorArrangementSelections] = useState({})
+  const [vendorArrangementDates, setVendorArrangementDates] = useState({})
+  const [vendorArrangementMonths, setVendorArrangementMonths] = useState({})
+  const [vendorArrangementNotes, setVendorArrangementNotes] = useState({})
   const [payoutAttempts, setPayoutAttempts] = useState({})
 const [loadingPayoutAttempts, setLoadingPayoutAttempts] = useState(null)
 const [payoutActionLoading, setPayoutActionLoading] = useState(null)
@@ -25,6 +36,8 @@ const [payoutActionLoading, setPayoutActionLoading] = useState(null)
     vendorOrders: [],
     riders: [],
     riderApplications: [],
+    vendorSubscriptions: [],
+    vendorSubscriptionOverrides: [],
   })
 
   const formatNaira = (value) =>
@@ -256,6 +269,9 @@ const handlePayoutAction = async (payout, action) => {
         vendorOrdersResult,
         ridersResult,
         riderApplicationsResult,
+        subscriptionSettingsResult,
+        vendorSubscriptionsResult,
+        vendorSubscriptionOverridesResult,
       ] = await Promise.all([
         supabase
           .from('profiles')
@@ -267,7 +283,7 @@ const handlePayoutAction = async (payout, action) => {
         supabase
           .from('stores')
           .select(
-            'id, owner_id, store_name, description, logo_url, phone, location, status, delivery_fee, created_at'
+            'id, owner_id, store_name, description, logo_url, phone, location, status, delivery_fee, created_at, application_approved_at'
           )
           .order('created_at', {
             ascending: false,
@@ -373,6 +389,20 @@ const handlePayoutAction = async (payout, action) => {
           .order('created_at', {
             ascending: false,
           }),
+
+        supabase
+          .from('market_subscription_settings')
+          .select('id, enforcement_paused, automatic_trials_enabled, automatic_grace_enabled, updated_at')
+          .eq('id', 1)
+          .maybeSingle(),
+
+        supabase
+          .from('vendor_subscriptions')
+          .select('id, vendor_id, status, trial_started_at, trial_ends_at, current_period_start, current_period_end, grace_period_ends_at, monthly_price, created_at, updated_at'),
+
+        supabase
+          .from('vendor_subscription_overrides')
+          .select('vendor_id, is_exempt, trial_started_at, trial_ends_at, grace_started_at, grace_ends_at, admin_note, access_override_type, access_override_starts_at, access_override_ends_at, updated_at'),
       ])
 
       // Load vendor bank accounts for payout review
@@ -450,6 +480,9 @@ const handlePayoutAction = async (payout, action) => {
         vendorOrdersResult,
         ridersResult,
         riderApplicationsResult,
+        subscriptionSettingsResult,
+        vendorSubscriptionsResult,
+        vendorSubscriptionOverridesResult,
       ]
 
       const failed = results.find(
@@ -473,7 +506,17 @@ const handlePayoutAction = async (payout, action) => {
         vendorOrders: vendorOrdersResult.data || [],
         riders: ridersResult.data || [],
         riderApplications,
+        vendorSubscriptions: vendorSubscriptionsResult.data || [],
+        vendorSubscriptionOverrides: vendorSubscriptionOverridesResult.data || [],
       })
+
+      if (subscriptionSettingsResult.data) {
+        setSubscriptionSettings({
+          enforcement_paused: subscriptionSettingsResult.data.enforcement_paused,
+          automatic_trials_enabled: subscriptionSettingsResult.data.automatic_trials_enabled,
+          automatic_grace_enabled: subscriptionSettingsResult.data.automatic_grace_enabled,
+        })
+      }
 
       await loadRiderFileUrls(riderApplications)
 
@@ -496,23 +539,43 @@ const handlePayoutAction = async (payout, action) => {
 
   const reviewVendorApplication = async (
     store,
-    decision
+    decision,
+    arrangement = 'require_payment'
   ) => {
-    const action =
-      `${decision}-${store.id}`
+    const action = `${decision}-${store.id}`
+    let customStart = null
+    let customEnd = null
+    let adminNote = null
+
+    if (decision === 'approved') {
+      adminNote = window.prompt('Optional subscription arrangement note:', '') || null
+      if (arrangement === 'custom_exemption') {
+        customStart = window.prompt('Custom exemption start (YYYY-MM-DD):', new Date().toISOString().slice(0, 10))
+        customEnd = window.prompt('Custom exemption end (YYYY-MM-DD):', '')
+        if (!customStart || !customEnd || customEnd < customStart) {
+          window.alert('Enter a valid custom start and end date.')
+          return
+        }
+        customStart = `${customStart}T00:00:00+01:00`
+        customEnd = `${customEnd}T23:59:59+01:00`
+      }
+    }
 
     try {
       setVendorAction(action)
       setError('')
 
-      const { error: reviewError } =
-        await supabase.rpc(
-          'review_vendor_application',
-          {
-            p_store_id: store.id,
-            p_decision: decision,
-          }
-        )
+      const { error: reviewError } = await supabase.rpc(
+        'admin_review_vendor_application',
+        {
+          p_store_id: store.id,
+          p_decision: decision,
+          p_arrangement: decision === 'approved' ? arrangement : 'require_payment',
+          p_custom_start: customStart,
+          p_custom_end: customEnd,
+          p_admin_note: adminNote,
+        }
+      )
 
       if (reviewError) {
         throw new Error(
@@ -531,6 +594,78 @@ const handlePayoutAction = async (payout, action) => {
         err.message ||
           'Failed to review vendor application.'
       )
+    } finally {
+      setVendorAction(null)
+    }
+  }
+
+  const saveSubscriptionSettings = async () => {
+    try {
+      setSubscriptionSettingsSaving(true)
+      setError('')
+      const { error: saveError } = await supabase.rpc(
+        'admin_set_subscription_controls',
+        {
+          p_enforcement_paused: subscriptionSettings.enforcement_paused,
+          p_automatic_trials_enabled: subscriptionSettings.automatic_trials_enabled,
+          p_automatic_grace_enabled: subscriptionSettings.automatic_grace_enabled,
+        }
+      )
+      if (saveError) throw saveError
+      window.alert('Subscription settings saved.')
+      await loadDashboard(true)
+    } catch (err) {
+      console.error('Subscription settings error:', err)
+      setError(err.message || 'Unable to save subscription settings.')
+    } finally {
+      setSubscriptionSettingsSaving(false)
+    }
+  }
+
+  const applyVendorArrangement = async (vendorId) => {
+    const arrangement = vendorArrangementSelections[vendorId] || 'require_payment'
+    let customStart = null
+    let customEnd = null
+    let waiverMonth = null
+    if (arrangement === 'custom_exemption') {
+      const dates = vendorArrangementDates[vendorId] || {}
+      if (!dates.start || !dates.end || new Date(dates.end) <= new Date(dates.start)) {
+        window.alert('Enter a valid custom start and end date.')
+        return
+      }
+      customStart = `${dates.start}T00:00:00+01:00`
+      customEnd = `${dates.end}T23:59:59+01:00`
+    }
+    if (arrangement === 'monthly_waiver') {
+      waiverMonth = vendorArrangementMonths[vendorId]
+      if (!waiverMonth) {
+        window.alert('Select the month to waive.')
+        return
+      }
+      waiverMonth = `${waiverMonth}-01`
+    }
+    const note = vendorArrangementNotes[vendorId] || ''
+    if (!window.confirm(`Apply ${arrangement.replaceAll('_', ' ')} to this vendor?`)) return
+    try {
+      setVendorAction(`subscription-${vendorId}`)
+      setError('')
+      const { error: applyError } = await supabase.rpc(
+        'admin_apply_vendor_subscription_arrangement',
+        {
+          p_vendor_id: vendorId,
+          p_arrangement: arrangement,
+          p_custom_start: customStart,
+          p_custom_end: customEnd,
+          p_waiver_month: waiverMonth,
+          p_admin_note: note.trim() || null,
+        }
+      )
+      if (applyError) throw applyError
+      window.alert('Vendor subscription arrangement updated.')
+      await loadDashboard(true)
+    } catch (err) {
+      console.error('Vendor subscription arrangement error:', err)
+      setError(err.message || 'Unable to update vendor subscription arrangement.')
     } finally {
       setVendorAction(null)
     }
@@ -1303,10 +1438,9 @@ const handlePayoutAction = async (payout, action) => {
       () =>
         data.stores.filter(
           (store) =>
-            store.status ===
-              'active' ||
-            store.status ===
-              'suspended'
+            store.status === 'active' ||
+            store.status === 'suspended' ||
+            Boolean(store.application_approved_at)
         ),
       [data.stores]
     )
@@ -1767,6 +1901,32 @@ const handlePayoutAction = async (payout, action) => {
               </div>
             </section>
 
+            {/* VENDOR SUBSCRIPTION SETTINGS */}
+            <section>
+              <div style={styles.sectionHeading}>Vendor Subscription Settings</div>
+              <div style={styles.panel}>
+                <div style={styles.panelHeader}>
+                  <div>
+                    <h3 style={styles.panelTitle}>Global Subscription Controls</h3>
+                    <p style={styles.panelSubtitle}>₦3,999 per month. Changes apply to marketplace-wide automatic rules; individual admin arrangements remain separate.</p>
+                  </div>
+                </div>
+                <div style={{ display: 'grid', gap: '14px' }}>
+                  {[
+                    ['enforcement_paused', 'Pause subscription enforcement', 'Temporarily allow vendors without changing their individual subscription records.'],
+                    ['automatic_trials_enabled', 'Automatically grant 14-day trials', 'When enabled, newly created vendor subscriptions receive the automatic trial.'],
+                    ['automatic_grace_enabled', 'Automatically grant 5-day grace', 'When enabled, eligible failed/expired subscriptions receive automatic grace.'],
+                  ].map(([key, label, description]) => (
+                    <label key={key} style={{ display: 'flex', gap: '10px', alignItems: 'flex-start' }}>
+                      <input type="checkbox" checked={Boolean(subscriptionSettings[key])} onChange={(event) => setSubscriptionSettings((current) => ({ ...current, [key]: event.target.checked }))} />
+                      <span><strong>{label}</strong><small style={{ display: 'block', color: '#64748b', marginTop: '3px' }}>{description}</small></span>
+                    </label>
+                  ))}
+                  <button type="button" disabled={subscriptionSettingsSaving} onClick={saveSubscriptionSettings} style={{ ...styles.approveButton, justifySelf: 'start', opacity: subscriptionSettingsSaving ? 0.6 : 1 }}>{subscriptionSettingsSaving ? 'Saving...' : 'Save Subscription Settings'}</button>
+                </div>
+              </div>
+            </section>
+
             {/* VENDOR APPLICATIONS */}
             <section>
               <div
@@ -1778,9 +1938,7 @@ const handlePayoutAction = async (payout, action) => {
               </div>
 
               <div
-                style={
-                  styles.panel
-                }
+                style={{ ...styles.panel, ...styles.scrollablePanel }}
               >
                 <div
                   style={
@@ -1967,10 +2125,23 @@ const handlePayoutAction = async (payout, action) => {
                             </div>
 
                             <div
-                              style={
-                                styles.applicationActions
-                              }
+                              style={{ ...styles.applicationActions, alignItems: 'stretch' }}
                             >
+                              <label style={{ display: 'grid', gap: '5px', fontSize: '12px', width: '100%' }}>
+                                Subscription arrangement on approval
+                                <select
+                                  value={vendorApprovalArrangements[store.id] || 'require_payment'}
+                                  disabled={reviewing}
+                                  onChange={(event) => setVendorApprovalArrangements((current) => ({ ...current, [store.id]: event.target.value }))}
+                                  style={{ padding: '9px', border: '1px solid #cbd5e1', borderRadius: '7px', width: '100%' }}
+                                >
+                                  <option value="require_payment">Require payment — no free trial</option>
+                                  <option value="14_day_trial">Grant 14-day trial</option>
+                                  <option value="5_day_grace">Grant 5-day grace</option>
+                                  <option value="permanent_exemption">Permanent exemption</option>
+                                  <option value="custom_exemption">Custom date-based exemption</option>
+                                </select>
+                              </label>
                               <button
                                 type="button"
                                 disabled={
@@ -1979,7 +2150,8 @@ const handlePayoutAction = async (payout, action) => {
                                 onClick={() =>
                                   reviewVendorApplication(
                                     store,
-                                    'approved'
+                                    'approved',
+                                    vendorApprovalArrangements[store.id] || 'require_payment'
                                   )
                                 }
                                 style={{
@@ -2215,19 +2387,13 @@ const handlePayoutAction = async (payout, action) => {
             </section>
 
             {/* VENDOR MANAGEMENT */}
-            <section>
-              <div
-                style={
-                  styles.sectionHeading
-                }
-              >
-                Vendor Management
-              </div>
+<section>
+  <div style={styles.sectionHeading}>
+    Vendor Management
+  </div>
 
               <div
-                style={
-                  styles.panel
-                }
+                style={{ ...styles.panel, ...styles.scrollablePanel }}
               >
                 <div
                   style={
@@ -2382,35 +2548,53 @@ const handlePayoutAction = async (payout, action) => {
                                     store.status
                                   )}
                                 </div>
+                                {(() => {
+                                  const subscription = data.vendorSubscriptions.find((item) => item.vendor_id === store.owner_id)
+                                  const override = data.vendorSubscriptionOverrides.find((item) => item.vendor_id === store.owner_id)
+                                  return (
+                                    <div style={{ marginTop: '10px', display: 'grid', gap: '7px' }}>
+                                      <div style={styles.applicationMeta}><strong>Subscription:</strong> {subscription?.status || 'Not initialized'}{subscription?.current_period_end ? ` · renews/ends ${new Date(subscription.current_period_end).toLocaleDateString('en-NG')}` : ''}</div>
+                                      <div style={styles.applicationMeta}><strong>Arrangement:</strong> {override?.is_exempt ? 'Permanent exemption' : override?.access_override_type || 'Standard payment requirement'}</div>
+                                      <label style={{ display: 'grid', gap: '5px', fontSize: '12px' }}>Change subscription arrangement
+                                        <select value={vendorArrangementSelections[store.owner_id] || 'require_payment'} onChange={(event) => setVendorArrangementSelections((current) => ({ ...current, [store.owner_id]: event.target.value }))} style={{ padding: '8px', border: '1px solid #cbd5e1', borderRadius: '7px', width: '100%' }}>
+                                          <option value="require_payment">Require payment</option>
+                                          <option value="14_day_trial">14-day trial</option>
+                                          <option value="5_day_grace">5-day grace</option>
+                                          <option value="permanent_exemption">Permanent exemption</option>
+                                          <option value="monthly_waiver">Monthly waiver</option>
+                                          <option value="custom_exemption">Custom date-based exemption</option>
+                                        </select>
+                                      </label>
+                                      {(vendorArrangementSelections[store.owner_id] || '') === 'custom_exemption' && (
+                                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '7px' }}>
+                                          <label style={{ fontSize: '11px' }}>Start date<input type="date" value={vendorArrangementDates[store.owner_id]?.start || ''} onChange={(event) => setVendorArrangementDates((current) => ({ ...current, [store.owner_id]: { ...(current[store.owner_id] || {}), start: event.target.value } }))} style={{ width: '100%', padding: '7px' }} /></label>
+                                          <label style={{ fontSize: '11px' }}>End date<input type="date" value={vendorArrangementDates[store.owner_id]?.end || ''} onChange={(event) => setVendorArrangementDates((current) => ({ ...current, [store.owner_id]: { ...(current[store.owner_id] || {}), end: event.target.value } }))} style={{ width: '100%', padding: '7px' }} /></label>
+                                        </div>
+                                      )}
+                                      {(vendorArrangementSelections[store.owner_id] || '') === 'monthly_waiver' && (
+                                        <label style={{ fontSize: '11px' }}>Waiver month<input type="month" value={vendorArrangementMonths[store.owner_id] || ''} onChange={(event) => setVendorArrangementMonths((current) => ({ ...current, [store.owner_id]: event.target.value }))} style={{ width: '100%', padding: '7px' }} /></label>
+                                      )}
+                                      <input type="text" value={vendorArrangementNotes[store.owner_id] || ''} onChange={(event) => setVendorArrangementNotes((current) => ({ ...current, [store.owner_id]: event.target.value }))} placeholder="Admin note (optional)" style={{ width: '100%', padding: '8px', border: '1px solid #cbd5e1', borderRadius: '7px' }} />
+                                      <button type="button" disabled={vendorAction === `subscription-${store.owner_id}`} onClick={() => applyVendorArrangement(store.owner_id)} style={{ ...styles.approveButton, opacity: vendorAction === `subscription-${store.owner_id}` ? 0.6 : 1 }}>{vendorAction === `subscription-${store.owner_id}` ? 'Saving arrangement...' : 'Apply Arrangement'}</button>
+                                    </div>
+                                  )
+                                })()}
                               </div>
                             </div>
 
-                            <button
-                              type="button"
-                              disabled={
-                                updating
-                              }
-                              onClick={() =>
-                                toggleVendorStoreStatus(
-                                  store
-                                )
-                              }
-                              style={{
-                                ...(suspended
-                                  ? styles.approveButton
-                                  : styles.rejectButton),
-                                opacity:
-                                  updating
-                                    ? 0.5
-                                    : 1,
-                              }}
-                            >
-                              {updating
-                                ? 'Saving...'
-                                : suspended
-                                  ? 'Reactivate'
-                                  : 'Suspend'}
-                            </button>
+                            {(store.status === 'active' || store.status === 'suspended') && (
+                              <button
+                                type="button"
+                                disabled={updating}
+                                onClick={() => toggleVendorStoreStatus(store)}
+                                style={{
+                                  ...(suspended ? styles.approveButton : styles.rejectButton),
+                                  opacity: updating ? 0.5 : 1,
+                                }}
+                              >
+                                {updating ? 'Saving...' : suspended ? 'Reactivate' : 'Suspend'}
+                              </button>
+                            )}
                           </div>
                         )
                       }
@@ -2671,13 +2855,11 @@ const handlePayoutAction = async (payout, action) => {
                   styles.sectionHeading
                 }
               >
-                Rider Records & Applications
+                Rider Applications
               </div>
 
               <div
-                style={
-                  styles.panel
-                }
+                style={{ ...styles.panel, ...styles.scrollablePanel }}
               >
                 <div
                   style={
@@ -3564,20 +3746,18 @@ const handlePayoutAction = async (payout, action) => {
               </div>
             </section>
 
-            {/* RIDER MANAGEMENT */}
+            {/* RIDER RECORDS */}
             <section>
               <div
                 style={
                   styles.sectionHeading
                 }
               >
-                Rider Management
+                Rider Records
               </div>
 
               <div
-                style={
-                  styles.riderGrid
-                }
+                style={{ ...styles.riderGrid, ...styles.riderRecordsScroll }}
               >
                 <div
                   style={
@@ -4972,6 +5152,25 @@ const styles = {
     borderRadius: '8px',
     padding: '19px',
     marginBottom: '10px',
+  },
+
+  // Independent scrolling for long admin management lists.
+  scrollablePanel: {
+    maxHeight: '460px',
+    overflowY: 'auto',
+    overscrollBehavior: 'contain',
+    scrollbarGutter: 'stable',
+    WebkitOverflowScrolling: 'touch',
+  },
+
+  riderRecordsScroll: {
+    maxHeight: '460px',
+    overflowY: 'auto',
+    overscrollBehavior: 'contain',
+    scrollbarGutter: 'stable',
+    WebkitOverflowScrolling: 'touch',
+    paddingRight: '6px',
+    alignItems: 'start',
   },
 
   panelHeader: {
