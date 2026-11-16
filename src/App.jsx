@@ -1,3 +1,4 @@
+
 import { useEffect, useState } from 'react'
 import './App.css'
 
@@ -69,6 +70,12 @@ function App() {
 
   const [vendorSubscription, setVendorSubscription] = useState(null)
   const [subscriptionLoading, setSubscriptionLoading] = useState(false)
+
+  // True only when Supabase confirms that this vendor may sell.
+  const [
+    vendorSubscriptionAccessAllowed,
+    setVendorSubscriptionAccessAllowed,
+  ] = useState(false)
 
   /*
    * ---------------------------------------------------------
@@ -335,6 +342,40 @@ function App() {
       }
     }
 
+    // Check the actual subscription entitlement using the existing RPC.
+    const loadVendorSubscriptionAccess = async (userId) => {
+      // Fail closed until Supabase confirms access.
+      if (mounted) {
+        setVendorSubscriptionAccessAllowed(false)
+      }
+
+      if (!userId) return
+
+      const { data, error } = await supabase.rpc(
+        'vendor_subscription_access_allowed',
+        {
+          p_vendor_id: userId,
+        }
+      )
+
+      if (error) {
+        console.error(
+          'Vendor subscription access check error:',
+          error
+        )
+
+        if (mounted) {
+          setVendorSubscriptionAccessAllowed(false)
+        }
+
+        return
+      }
+
+      if (mounted) {
+        setVendorSubscriptionAccessAllowed(data === true)
+      }
+    }
+
     const loadSession = async () => {
       const {
         data: { session },
@@ -349,10 +390,12 @@ function App() {
 
         await loadStore(session.user.id)
         await loadVendorSubscription(session.user.id)
+        await loadVendorSubscriptionAccess(session.user.id)
         await checkAdmin()
       } else {
         setStore(null)
         setVendorSubscription(null)
+        setVendorSubscriptionAccessAllowed(false)
         setIsAdmin(false)
         setSubscriptionLoading(false)
         setAdminCheckComplete(true)
@@ -397,10 +440,12 @@ function App() {
         if (session?.user) {
           await loadStore(session.user.id)
           await loadVendorSubscription(session.user.id)
+          await loadVendorSubscriptionAccess(session.user.id)
           await checkAdmin()
         } else {
           setStore(null)
           setVendorSubscription(null)
+          setVendorSubscriptionAccessAllowed(false)
           setIsAdmin(false)
           setSubscriptionLoading(false)
           setAdminCheckComplete(true)
@@ -467,8 +512,14 @@ function App() {
    * ---------------------------------------------------------
    */
 
-  const isActiveStore =
-    user && store?.status === 'active'
+  // Selling features require an active store AND confirmed
+  // subscription access from Supabase.
+  const isActiveStore = Boolean(
+    user &&
+    store?.status === 'active' &&
+    !loading &&
+    vendorSubscriptionAccessAllowed
+  )
 
   const isTrialStillActive = () => {
     if (
@@ -645,6 +696,7 @@ function App() {
     setUser(null)
     setStore(null)
     setVendorSubscription(null)
+    setVendorSubscriptionAccessAllowed(false)
     setIsAdmin(false)
 
     showView('home', false)
