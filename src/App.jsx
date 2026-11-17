@@ -71,6 +71,9 @@ function App() {
   const [vendorSubscription, setVendorSubscription] = useState(null)
   const [subscriptionLoading, setSubscriptionLoading] = useState(false)
 
+  // Admin-created subscription arrangements for this vendor.
+  const [vendorSubscriptionOverride, setVendorSubscriptionOverride] = useState(null)
+
   // True only when Supabase confirms that this vendor may sell.
   const [
     vendorSubscriptionAccessAllowed,
@@ -342,6 +345,52 @@ function App() {
       }
     }
 
+    // Load admin-created exemptions and other arrangements.
+    const loadVendorSubscriptionOverride = async (userId) => {
+      if (!userId) {
+        if (mounted) {
+          setVendorSubscriptionOverride(null)
+        }
+
+        return
+      }
+
+      const { data, error } = await supabase
+        .from('vendor_subscription_overrides')
+        .select(`
+          vendor_id,
+          is_exempt,
+          trial_started_at,
+          trial_ends_at,
+          grace_started_at,
+          grace_ends_at,
+          access_override_type,
+          access_override_starts_at,
+          access_override_ends_at,
+          admin_note,
+          updated_at
+        `)
+        .eq('vendor_id', userId)
+        .maybeSingle()
+
+      if (error) {
+        console.error(
+          'Vendor subscription override loading error:',
+          error
+        )
+
+        if (mounted) {
+          setVendorSubscriptionOverride(null)
+        }
+
+        return
+      }
+
+      if (mounted) {
+        setVendorSubscriptionOverride(data)
+      }
+    }
+
     // Check the actual subscription entitlement using the existing RPC.
     const loadVendorSubscriptionAccess = async (userId) => {
       // Fail closed until Supabase confirms access.
@@ -390,11 +439,13 @@ function App() {
 
         await loadStore(session.user.id)
         await loadVendorSubscription(session.user.id)
+        await loadVendorSubscriptionOverride(session.user.id)
         await loadVendorSubscriptionAccess(session.user.id)
         await checkAdmin()
       } else {
         setStore(null)
         setVendorSubscription(null)
+        setVendorSubscriptionOverride(null)
         setVendorSubscriptionAccessAllowed(false)
         setIsAdmin(false)
         setSubscriptionLoading(false)
@@ -440,11 +491,13 @@ function App() {
         if (session?.user) {
           await loadStore(session.user.id)
           await loadVendorSubscription(session.user.id)
+          await loadVendorSubscriptionOverride(session.user.id)
           await loadVendorSubscriptionAccess(session.user.id)
           await checkAdmin()
         } else {
           setStore(null)
           setVendorSubscription(null)
+          setVendorSubscriptionOverride(null)
           setVendorSubscriptionAccessAllowed(false)
           setIsAdmin(false)
           setSubscriptionLoading(false)
@@ -541,9 +594,65 @@ function App() {
     return trialEnds.getTime() > Date.now()
   }
 
+  // Determines whether an admin-created exemption is currently valid.
+  const isVendorSubscriptionExempt = () => {
+    const override = vendorSubscriptionOverride
+
+    if (!override) return false
+
+    // Permanent exemption.
+    if (
+      override.is_exempt === true ||
+      override.access_override_type === 'permanent_exemption'
+    ) {
+      return true
+    }
+
+    // Only custom and monthly exemptions use date ranges here.
+    const type = override.access_override_type
+
+    if (
+      type !== 'custom_exemption' &&
+      type !== 'monthly_waiver'
+    ) {
+      return false
+    }
+
+    if (
+      !override.access_override_starts_at ||
+      !override.access_override_ends_at
+    ) {
+      return false
+    }
+
+    const now = Date.now()
+    const starts = new Date(
+      override.access_override_starts_at
+    ).getTime()
+    const ends = new Date(
+      override.access_override_ends_at
+    ).getTime()
+
+    if (
+      Number.isNaN(starts) ||
+      Number.isNaN(ends)
+    ) {
+      return false
+    }
+
+    return now >= starts && now <= ends
+  }
+
   const handleVendorSubscriptionPayment = async () => {
     if (!user) {
       showView('auth')
+      return
+    }
+
+    if (isVendorSubscriptionExempt()) {
+      alert(
+        'Your vendor subscription is currently exempted. You do not need to make a subscription payment while the exemption is valid.'
+      )
       return
     }
 
@@ -660,6 +769,10 @@ function App() {
   }
 
   const getSubscriptionStatusText = () => {
+    if (isVendorSubscriptionExempt()) {
+      return 'Subscription Exempted'
+    }
+
     if (!vendorSubscription) {
       return 'Subscription information unavailable.'
     }
@@ -696,8 +809,10 @@ function App() {
     setUser(null)
     setStore(null)
     setVendorSubscription(null)
+    setVendorSubscriptionOverride(null)
     setVendorSubscriptionAccessAllowed(false)
     setIsAdmin(false)
+    setSubscriptionLoading(false)
 
     showView('home', false)
 
@@ -1208,20 +1323,71 @@ function App() {
                   /month
                 </p>
 
-                {vendorSubscription.status === 'trialing' && (
-                  <>
-                    <p>
-                      Trial ends:{' '}
-                      {formatSubscriptionDate(
-                        vendorSubscription.trial_ends_at
-                      )}
-                    </p>
+                {isVendorSubscriptionExempt() && (
+                  <p
+                    style={{
+                      color: '#15803d',
+                      fontWeight: '600',
+                    }}
+                  >
+                    Your store has been exempted from vendor subscription payments.
+                    You can continue selling without making a subscription payment
+                    while your exemption remains valid.
+                  </p>
+                )}
 
-                    {isTrialStillActive() ? (
+                {!isVendorSubscriptionExempt() &&
+                  vendorSubscription.status === 'trialing' && (
+                    <>
                       <p>
-                        You can continue selling during your free trial.
+                        Trial ends:{' '}
+                        {formatSubscriptionDate(
+                          vendorSubscription.trial_ends_at
+                        )}
                       </p>
-                    ) : (
+
+                      {isTrialStillActive() ? (
+                        <p>
+                          You can continue selling during your free trial.
+                        </p>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={handleVendorSubscriptionPayment}
+                          disabled={subscriptionLoading}
+                        >
+                          {subscriptionLoading
+                            ? 'Opening Paystack...'
+                            : 'Subscribe — ₦3,999/month'}
+                        </button>
+                      )}
+                    </>
+                  )}
+
+                {!isVendorSubscriptionExempt() &&
+                  vendorSubscription.status === 'active' && (
+                    <>
+                      <p>
+                        Current period ends:{' '}
+                        {formatSubscriptionDate(
+                          vendorSubscription.current_period_end
+                        )}
+                      </p>
+
+                      <p>Your vendor subscription is active.</p>
+                    </>
+                  )}
+
+                {!isVendorSubscriptionExempt() &&
+                  vendorSubscription.status === 'grace_period' && (
+                    <>
+                      <p>
+                        Grace period ends:{' '}
+                        {formatSubscriptionDate(
+                          vendorSubscription.grace_period_ends_at
+                        )}
+                      </p>
+
                       <button
                         type="button"
                         onClick={handleVendorSubscriptionPayment}
@@ -1229,34 +1395,13 @@ function App() {
                       >
                         {subscriptionLoading
                           ? 'Opening Paystack...'
-                          : 'Subscribe — ₦3,999/month'}
+                          : 'Pay ₦3,999 / Renew Subscription'}
                       </button>
-                    )}
-                  </>
-                )}
+                    </>
+                  )}
 
-                {vendorSubscription.status === 'active' && (
-                  <>
-                    <p>
-                      Current period ends:{' '}
-                      {formatSubscriptionDate(
-                        vendorSubscription.current_period_end
-                      )}
-                    </p>
-
-                    <p>Your vendor subscription is active.</p>
-                  </>
-                )}
-
-                {vendorSubscription.status === 'grace_period' && (
-                  <>
-                    <p>
-                      Grace period ends:{' '}
-                      {formatSubscriptionDate(
-                        vendorSubscription.grace_period_ends_at
-                      )}
-                    </p>
-
+                {!isVendorSubscriptionExempt() &&
+                  vendorSubscription.status === 'past_due' && (
                     <button
                       type="button"
                       onClick={handleVendorSubscriptionPayment}
@@ -1266,44 +1411,33 @@ function App() {
                         ? 'Opening Paystack...'
                         : 'Pay ₦3,999 / Renew Subscription'}
                     </button>
-                  </>
-                )}
+                  )}
 
-                {vendorSubscription.status === 'past_due' && (
-                  <button
-                    type="button"
-                    onClick={handleVendorSubscriptionPayment}
-                    disabled={subscriptionLoading}
-                  >
-                    {subscriptionLoading
-                      ? 'Opening Paystack...'
-                      : 'Pay ₦3,999 / Renew Subscription'}
-                  </button>
-                )}
+                {!isVendorSubscriptionExempt() &&
+                  vendorSubscription.status === 'expired' && (
+                    <button
+                      type="button"
+                      onClick={handleVendorSubscriptionPayment}
+                      disabled={subscriptionLoading}
+                    >
+                      {subscriptionLoading
+                        ? 'Opening Paystack...'
+                        : 'Subscribe — ₦3,999/month'}
+                    </button>
+                  )}
 
-                {vendorSubscription.status === 'expired' && (
-                  <button
-                    type="button"
-                    onClick={handleVendorSubscriptionPayment}
-                    disabled={subscriptionLoading}
-                  >
-                    {subscriptionLoading
-                      ? 'Opening Paystack...'
-                      : 'Subscribe — ₦3,999/month'}
-                  </button>
-                )}
-
-                {vendorSubscription.status === 'cancelled' && (
-                  <button
-                    type="button"
-                    onClick={handleVendorSubscriptionPayment}
-                    disabled={subscriptionLoading}
-                  >
-                    {subscriptionLoading
-                      ? 'Opening Paystack...'
-                      : 'Subscribe — ₦3,999/month'}
-                  </button>
-                )}
+                {!isVendorSubscriptionExempt() &&
+                  vendorSubscription.status === 'cancelled' && (
+                    <button
+                      type="button"
+                      onClick={handleVendorSubscriptionPayment}
+                      disabled={subscriptionLoading}
+                    >
+                      {subscriptionLoading
+                        ? 'Opening Paystack...'
+                        : 'Subscribe — ₦3,999/month'}
+                    </button>
+                  )}
               </div>
             )}
 
